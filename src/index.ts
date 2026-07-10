@@ -277,7 +277,9 @@ async function executeIntent(
         await sendMessage(env, chatId, "Команда /refresh доступна только владельцу. Для проверки используйте /test.");
         return;
       }
-      await sendMessage(env, chatId, "Проверяю LiveClasses и LostFilm…");
+      await sendMessage(env, chatId, "Проверяю LiveClasses и LostFilm…").catch((error) => {
+        console.warn("could not send refresh progress message", safeError(error));
+      });
       const summary = await refreshAll(env, { notify: intent.action === "refresh" });
       if (summary.busy) {
         await sendMessage(env, chatId, "Проверка уже выполняется. Повторите через минуту.");
