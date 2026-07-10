@@ -446,7 +446,7 @@ function formatLessons(rows: Record<string, unknown>[], query: string): string {
     `• ${row.title}`,
     `${row.category}${row.author ? ` · ${row.author}` : ""}`,
     row.status === "live" ? "Сейчас в эфире" : formatMoscowDateTime(String(row.scheduled_at || "")),
-    row.url
+    row.status === "live" ? `Смотреть трансляцию: ${row.url}` : row.url
   ].join("\n"));
   return `Эфиры${query ? ` по запросу «${query}»` : ""}:\n\n${lines.join("\n\n")}`;
 }

@@ -82,7 +82,12 @@ export function parseLiveClasses(html: string, now = new Date()): LiveEvent[] {
 
       if (!isLive && (!scheduledAt || new Date(scheduledAt).getTime() <= now.getTime())) continue;
 
-      const url = absoluteUrl(BASE_URL, href);
+      const urlObject = new URL(absoluteUrl(BASE_URL, href));
+      if (isLive) {
+        urlObject.searchParams.set("live", "1");
+        urlObject.hash = "live";
+      }
+      const url = urlObject.toString();
       const eventKey = `liveclasses:${new URL(url).pathname.replace(/\/$/, "")}:${sectionDate.dateKey}`;
       results.push({
         eventKey,
