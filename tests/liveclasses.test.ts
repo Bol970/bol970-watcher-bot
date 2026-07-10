@@ -26,13 +26,13 @@ describe("parseLiveClasses", () => {
 
     const events = parseLiveClasses(html, new Date("2026-07-10T06:00:00Z"));
     expect(events.map((event) => event.title)).toEqual(["Прямой эфир", "Будущий урок"]);
-    expect(events[0]!.url).toBe("https://liveclasses.ru/course/programming/%D0%9F%D1%80%D1%8F%D0%BC%D0%BE%D0%B9%20%D1%8D%D1%84%D0%B8%D1%80/?live=1#live");
+    expect(events[0]!.url).toBe("https://liveclasses.ru/course/programming/%D0%9F%D1%80%D1%8F%D0%BC%D0%BE%D0%B9%20%D1%8D%D1%84%D0%B8%D1%80/?live=1");
     expect(events[1]).toMatchObject({
       category: "Программирование",
       scheduledAt: "2026-07-10T07:00:00.000Z",
       status: "upcoming"
     });
-    expect(events[1]!.url).not.toContain("#live");
+    expect(events.every((event) => !event.url.includes("#live"))).toBe(true);
   });
 
   it("infers the next year for a January schedule shown in December", () => {

@@ -462,7 +462,10 @@ function formatLessonTimeline(rows: Record<string, unknown>[], query: string): s
         : futureIndex === 0 ? "Ближайший эфир" : futureIndex === 1 ? "Потом" : "Далее";
       heading = `${label} — ${formatMoscowDateTime(stage.scheduledAt || "")}`;
     }
-    return [heading, ...stage.rows.map(formatLessonRow)].join("\n\n");
+    const hint = stage.kind === "live"
+      ? ["На странице урока нажмите «Смотреть прямую трансляцию прямо сейчас»."]
+      : [];
+    return [heading, ...hint, ...stage.rows.map(formatLessonRow)].join("\n\n");
   });
   return `Три ближайших этапа${query ? ` по запросу «${query}»` : ""}:\n\n${blocks.join("\n\n")}`;
 }
@@ -475,16 +478,19 @@ function formatFullLessonSchedule(rows: Record<string, unknown>[], query: string
     `• ${row.title}`,
     `${row.category}${row.author ? ` · ${row.author}` : ""}`,
     row.status === "live" ? "Сейчас в эфире" : formatMoscowDateTime(String(row.scheduled_at || "")),
-    row.status === "live" ? `Смотреть трансляцию: ${row.url}` : row.url
+    row.status === "live" ? `Открыть страницу трансляции: ${row.url}` : row.url
   ].join("\n"));
-  return `Полное расписание эфиров${query ? ` по запросу «${query}»` : ""}:\n\n${lines.join("\n\n")}`;
+  const liveHint = rows.some((row) => row.status === "live")
+    ? "\n\nДля прямого эфира откройте ссылку и нажмите на странице «Смотреть прямую трансляцию прямо сейчас»."
+    : "";
+  return `Полное расписание эфиров${query ? ` по запросу «${query}»` : ""}:${liveHint}\n\n${lines.join("\n\n")}`;
 }
 
 function formatLessonRow(row: Record<string, unknown>): string {
   return [
     `• ${row.title}`,
     `${row.category}${row.author ? ` · ${row.author}` : ""}`,
-    row.status === "live" ? `Смотреть трансляцию: ${row.url}` : row.url
+    row.status === "live" ? `Открыть страницу трансляции: ${row.url}` : row.url
   ].join("\n");
 }
 

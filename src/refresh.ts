@@ -333,7 +333,9 @@ function formatLiveEvent(event: LiveEvent): string {
     event.title,
     `${event.category}${event.author ? ` · ${event.author}` : ""}`,
     event.status === "live" ? "Сейчас в эфире" : formatMoscowDateTime(event.scheduledAt),
-    event.status === "live" ? `Смотреть трансляцию: ${event.url}` : event.url
+    event.status === "live"
+      ? `Открыть страницу трансляции: ${event.url}\nНа странице нажмите «Смотреть прямую трансляцию прямо сейчас».`
+      : event.url
   ].join("\n");
 }
 
