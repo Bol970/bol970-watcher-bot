@@ -1,5 +1,5 @@
 import type { LiveEvent, LostFilmEvent, LostFilmMovieCatalogItem, MediaMetadata } from "./types";
-import { addMinutes, isoNow, looseNormalize, normalizeText, randomId, sha256 } from "./utils";
+import { addMinutes, isoNow, looselyIncludes, looseNormalize, normalizeText, randomId, sha256 } from "./utils";
 
 export interface LiveChange {
   type: "new" | "changed";
@@ -561,16 +561,25 @@ export async function clearDialogSession(db: D1Database, telegramId: string): Pr
   await db.prepare("DELETE FROM dialog_sessions WHERE telegram_id = ?").bind(telegramId).run();
 }
 
-export async function queryLiveEvents(db: D1Database, query = "", limit = 20): Promise<Record<string, unknown>[]> {
-  const normalized = normalizeText(query);
+export async function queryLiveEvents(
+  db: D1Database,
+  query = "",
+  limit = 20,
+  field: "all" | "teacher" = "all"
+): Promise<Record<string, unknown>[]> {
   const result = await db.prepare(`
     SELECT event_key, title, category, author, scheduled_at, status, url
     FROM live_events
-    WHERE (? = '' OR title_normalized LIKE ? OR category_normalized LIKE ?)
     ORDER BY status = 'live' DESC, scheduled_at ASC
-    LIMIT ?
-  `).bind(normalized, `%${normalized}%`, `%${normalized}%`, limit).all<Record<string, unknown>>();
-  return result.results || [];
+    LIMIT 500
+  `).all<Record<string, unknown>>();
+  return (result.results || []).filter((row) => {
+    const teacherMatches = looselyIncludes(String(row.author || ""), query);
+    if (field === "teacher") return teacherMatches;
+    return teacherMatches ||
+      looselyIncludes(String(row.title || ""), query) ||
+      looselyIncludes(String(row.category || ""), query);
+  }).slice(0, limit);
 }
 
 export async function queryUpcomingMedia(db: D1Database, query = "", limit = 20): Promise<Record<string, unknown>[]> {

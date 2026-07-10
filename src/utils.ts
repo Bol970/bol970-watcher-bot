@@ -24,6 +24,20 @@ export function looseNormalize(value: string | null | undefined): string {
     .join(" ");
 }
 
+export function looselyIncludes(value: string | null | undefined, query: string | null | undefined): boolean {
+  const haystack = looseNormalize(value);
+  const needle = looseNormalize(query);
+  if (!needle) return true;
+  if (haystack.includes(needle)) return true;
+  const haystackWords = haystack.split(" ").filter(Boolean);
+  return needle.split(" ").filter(Boolean).every((needleWord) =>
+    haystackWords.some((haystackWord) => {
+      const prefixLength = Math.min(5, needleWord.length, haystackWord.length);
+      return prefixLength >= 4 && needleWord.slice(0, prefixLength) === haystackWord.slice(0, prefixLength);
+    })
+  );
+}
+
 function stemRussianWord(word: string): string {
   if (word.length < 5) return word;
   const endings = ["иями", "ями", "ами", "ого", "ему", "ому", "ией", "иях", "ах", "ях", "ой", "ей", "ом", "ем", "ам", "ям", "а", "я", "ы", "и", "у", "ю", "е", "ь"];

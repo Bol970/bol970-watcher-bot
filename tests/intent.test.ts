@@ -5,6 +5,8 @@ describe("Russian intent fallback", () => {
   it.each([
     ["Следи за уроками по программированию", { action: "subscribe_lessons", filterType: "category", query: "Программирование" }],
     ["Когда будет урок про Blender?", { action: "query_lessons", filterType: "title", query: "Blender" }],
+    ["Покажи эфиры Алексея Шадрина", { action: "query_lessons", filterType: "title", query: "Алексея Шадрина" }],
+    ["Покажи уроки преподавателя Алексея Шадрина", { action: "query_lessons", filterType: "title", query: "Алексея Шадрина", lessonField: "teacher" }],
     ["Покажи все эфиры по программированию", { action: "query_lessons", filterType: "category", query: "Программирование", fullSchedule: true }],
     ["Следи за сериалом Медведь", { action: "subscribe_media", filterType: "title", query: "Медведь", mediaScope: "series" }],
     ["Покажи новинки жанра драма", { action: "query_new", filterType: "genre", query: "драма", mediaScope: "both" }],

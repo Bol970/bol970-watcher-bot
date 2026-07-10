@@ -42,6 +42,7 @@ export async function understandIntent(env: Env, text: string): Promise<BotInten
             `Категории уроков: ${LESSON_CATEGORIES.join(", ")}.`,
             "query_films означает каталог фильмов; query_new означает фактически вышедшие релизы за 7 дней.",
             "Для запроса полного расписания LiveClasses поставь query_lessons и fullSchedule=true.",
+            "Если пользователь ищет уроки именно по преподавателю, поставь lessonField=teacher.",
             "Не придумывай URL, даты или факты. Верни JSON по схеме."
           ].join(" ")
         },
@@ -65,6 +66,7 @@ export async function understandIntent(env: Env, text: string): Promise<BotInten
               },
               filterType: { type: "string", enum: ["category", "title", "genre"] },
               query: { type: "string" },
+              lessonField: { type: "string", enum: ["all", "teacher"] },
               mediaScope: { type: "string", enum: ["series", "movie", "both"] },
               onlyUpcoming: { type: "boolean" },
               fullSchedule: { type: "boolean" }
@@ -161,6 +163,15 @@ export function parseDeterministicIntent(text: string): BotIntent {
     return { action: "subscribe_media", filterType: "title", query, mediaScope: scope };
   }
 
+  if (/(преподавател|учител)/.test(normalized) && /(урок|эфир|расписан|покажи|найди)/.test(normalized)) {
+    const query = stripPhrases(original, [
+      /^(покажи|найди|дай|выведи)\s*/iu,
+      /(уроки|урок|эфиры|эфир|расписание)\s*/iu,
+      /(у|от)?\s*(преподавателя|преподаватель|учителя|учитель)\s*/iu
+    ]);
+    return { action: "query_lessons", filterType: "title", query, lessonField: "teacher" };
+  }
+
   if (/(полное расписание|все эфиры|весь эфир|все уроки)/.test(normalized)) {
     const category = findCategory(normalized);
     const query = category || stripPhrases(original, [
@@ -239,6 +250,9 @@ function validateAiIntent(result: unknown): BotIntent {
   return {
     action: candidate.action as BotIntent["action"],
     query: cleanText(String(candidate.query || "")),
+    lessonField: ["all", "teacher"].includes(String(candidate.lessonField))
+      ? candidate.lessonField as BotIntent["lessonField"]
+      : undefined,
     filterType: ["category", "title", "genre"].includes(String(candidate.filterType))
       ? candidate.filterType as BotIntent["filterType"]
       : undefined,

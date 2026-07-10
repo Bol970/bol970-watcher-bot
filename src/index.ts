@@ -134,11 +134,20 @@ async function handleCommand(
   name: string,
   arg: string
 ): Promise<void> {
-  if (name === "start" || name === "help") return sendHelp(env, chatId);
+  if (name === "start" || name === "help" || name === "menu") {
+    await clearDialogSession(env.DB, telegramId);
+    return sendHelp(env, chatId);
+  }
   if (name === "id" || name === "whoami") return sendMessage(env, chatId, `Ваш Telegram ID: ${telegramId}`);
   if (name === "cancel") return executeIntent(env, telegramId, chatId, role, { action: "cancel" });
   if (name === "lessons") return executeIntent(env, telegramId, chatId, role, { action: "query_lessons", query: arg });
   if (name === "schedule") return executeIntent(env, telegramId, chatId, role, { action: "query_lessons", query: arg, fullSchedule: true });
+  if (name === "teacher") {
+    if (arg) return executeIntent(env, telegramId, chatId, role, { action: "query_lessons", query: arg, lessonField: "teacher" });
+    await saveDialogSession(env.DB, telegramId, chatId, "teacher_search");
+    await sendMessage(env, chatId, "Напишите имя или фамилию преподавателя. Для отмены: /cancel");
+    return;
+  }
   if (name === "media") return executeIntent(env, telegramId, chatId, role, { action: "query_media", query: arg });
   if (name === "films") return executeIntent(env, telegramId, chatId, role, parseFilmsCommand(arg));
   if (name === "new") return executeIntent(env, telegramId, chatId, role, parseNewCommand(arg));
@@ -180,11 +189,12 @@ async function executeIntent(
       await sendHelp(env, chatId);
       return;
     case "query_lessons": {
-      const rows = await queryLiveEvents(env.DB, query, 200);
+      const rows = await queryLiveEvents(env.DB, query, 200, intent.lessonField || "all");
       await sendMessage(
         env,
         chatId,
-        intent.fullSchedule ? formatFullLessonSchedule(rows, query) : formatLessonTimeline(rows, query)
+        intent.fullSchedule ? formatFullLessonSchedule(rows, query) : formatLessonTimeline(rows, query),
+        lessonResultKeyboard()
       );
       return;
     }
@@ -327,6 +337,39 @@ async function processCallback(env: Env, callback: TelegramCallbackQuery): Promi
   }
   await ensureUser(env.DB, telegramId, chatId, role);
   const data = callback.data || "";
+  const menuIntents: Record<string, BotIntent> = {
+    "menu:lessons": { action: "query_lessons" },
+    "menu:schedule": { action: "query_lessons", fullSchedule: true },
+    "menu:media": { action: "query_media" },
+    "menu:films": { action: "query_films", mediaScope: "movie" },
+    "menu:new": { action: "query_new", mediaScope: "both" },
+    "menu:subscriptions": { action: "list_subscriptions" },
+    "menu:status": { action: "status" }
+  };
+  if (menuIntents[data]) {
+    await clearDialogSession(env.DB, telegramId);
+    await answerCallbackQuery(env, callback.id);
+    await executeIntent(env, telegramId, chatId, role, menuIntents[data]);
+    return;
+  }
+  if (data === "menu:teacher") {
+    await saveDialogSession(env.DB, telegramId, chatId, "teacher_search");
+    await answerCallbackQuery(env, callback.id);
+    await sendMessage(env, chatId, "Напишите имя или фамилию преподавателя. Для отмены: /cancel");
+    return;
+  }
+  if (data === "menu:watch") {
+    await clearDialogSession(env.DB, telegramId);
+    await answerCallbackQuery(env, callback.id);
+    await sendMessage(env, chatId, "Что отслеживать?", watchKeyboard());
+    return;
+  }
+  if (data === "menu:help") {
+    await clearDialogSession(env.DB, telegramId);
+    await answerCallbackQuery(env, callback.id);
+    await sendHelp(env, chatId);
+    return;
+  }
   if (data.startsWith("category:")) {
     const index = Number(data.split(":")[1]);
     const category = LESSON_CATEGORIES[index];
@@ -373,6 +416,12 @@ async function handleSessionText(
   step: string,
   text: string
 ): Promise<void> {
+  if (step === "teacher_search") {
+    const rows = await queryLiveEvents(env.DB, text, 200, "teacher");
+    await clearDialogSession(env.DB, telegramId);
+    await sendMessage(env, chatId, formatLessonTimeline(rows, text), lessonResultKeyboard());
+    return;
+  }
   if (step === "lesson_title") {
     await addSubscription(env.DB, { telegramId, domain: "lessons", filterType: "title", filterValue: text });
     await clearDialogSession(env.DB, telegramId);
@@ -414,15 +463,18 @@ function sendHelp(env: Env, chatId: string): Promise<void> {
     "Можно писать обычными фразами:",
     "• Следи за уроками по программированию",
     "• Когда будет урок про Blender?",
+    "• Покажи эфиры преподавателя Алексея Шадрина",
     "• Следи за сериалом Медведь",
     "• Покажи новинки жанра драма",
     "• Покажи фильмы жанра фантастика",
     "• Какие фильмы скоро выйдут?",
     "",
     "Команды:",
+    "/menu — кнопочное меню",
     "/watch — создать подписку",
     "/lessons [тема] — три блока по 5 уроков",
     "/schedule [тема] — полное расписание эфиров",
+    "/teacher [имя] — эфиры преподавателя",
     "/media [название] — будущие релизы",
     "/films [жанр или название] — каталог фильмов",
     "/new [фильмы|сериалы] [жанр] — фактические новинки за 7 дней",
@@ -432,7 +484,45 @@ function sendHelp(env: Env, chatId: string): Promise<void> {
     "/test — немедленно проверить источники",
     "/status — состояние источников",
     "/cancel — отменить диалог"
-  ].join("\n"));
+  ].join("\n"), mainMenuKeyboard());
+}
+
+function mainMenuKeyboard() {
+  return inlineKeyboard([
+    [
+      { text: "📺 Эфиры", data: "menu:lessons" },
+      { text: "📅 Всё расписание", data: "menu:schedule" }
+    ],
+    [
+      { text: "👨‍🏫 Преподаватель", data: "menu:teacher" },
+      { text: "🎞 Будущие релизы", data: "menu:media" }
+    ],
+    [
+      { text: "🎬 Фильмы", data: "menu:films" },
+      { text: "🆕 Новинки", data: "menu:new" }
+    ],
+    [
+      { text: "🔔 Подписки", data: "menu:subscriptions" },
+      { text: "📡 Статус", data: "menu:status" }
+    ],
+    [
+      { text: "➕ Подписаться", data: "menu:watch" },
+      { text: "❓ Помощь", data: "menu:help" }
+    ]
+  ]);
+}
+
+function lessonResultKeyboard() {
+  return inlineKeyboard([
+    [
+      { text: "🔄 Эфиры сейчас", data: "menu:lessons" },
+      { text: "📅 Полный список", data: "menu:schedule" }
+    ],
+    [
+      { text: "👨‍🏫 Найти преподавателя", data: "menu:teacher" },
+      { text: "🏠 Главное меню", data: "menu:help" }
+    ]
+  ]);
 }
 
 function watchKeyboard() {
@@ -441,7 +531,8 @@ function watchKeyboard() {
     [{ text: "Эфиры по названию", data: "dialog:lesson_title" }],
     [{ text: "Сериал или фильм", data: "dialog:media_title" }],
     [{ text: "Новинки по жанру", data: "dialog:media_genre" }],
-    [{ text: "Новые фильмы по жанру", data: "dialog:movie_genre" }]
+    [{ text: "Новые фильмы по жанру", data: "dialog:movie_genre" }],
+    [{ text: "🏠 Главное меню", data: "menu:help" }]
   ]);
 }
 
