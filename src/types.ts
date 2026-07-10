@@ -92,6 +92,7 @@ export interface BotIntent {
   query?: string;
   mediaScope?: "series" | "movie" | "both";
   onlyUpcoming?: boolean;
+  fullSchedule?: boolean;
 }
 
 export interface RefreshSummary {

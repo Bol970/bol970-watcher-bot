@@ -41,6 +41,7 @@ export async function understandIntent(env: Env, text: string): Promise<BotInten
             "Преобразуй русский запрос только в одно разрешенное действие.",
             `Категории уроков: ${LESSON_CATEGORIES.join(", ")}.`,
             "query_films означает каталог фильмов; query_new означает фактически вышедшие релизы за 7 дней.",
+            "Для запроса полного расписания LiveClasses поставь query_lessons и fullSchedule=true.",
             "Не придумывай URL, даты или факты. Верни JSON по схеме."
           ].join(" ")
         },
@@ -65,7 +66,8 @@ export async function understandIntent(env: Env, text: string): Promise<BotInten
               filterType: { type: "string", enum: ["category", "title", "genre"] },
               query: { type: "string" },
               mediaScope: { type: "string", enum: ["series", "movie", "both"] },
-              onlyUpcoming: { type: "boolean" }
+              onlyUpcoming: { type: "boolean" },
+              fullSchedule: { type: "boolean" }
             },
             required: ["action", "query"],
             additionalProperties: false
@@ -159,6 +161,16 @@ export function parseDeterministicIntent(text: string): BotIntent {
     return { action: "subscribe_media", filterType: "title", query, mediaScope: scope };
   }
 
+  if (/(полное расписание|все эфиры|весь эфир|все уроки)/.test(normalized)) {
+    const category = findCategory(normalized);
+    const query = category || stripPhrases(original, [
+      /^(покажи|покажи мне|дай|выведи)\s*/iu,
+      /(полное\s+расписание|все\s+эфиры|весь\s+эфир|все\s+уроки)\s*/iu,
+      /(по|про|на\s+тему)\s*/iu
+    ]);
+    return { action: "query_lessons", filterType: category ? "category" : query ? "title" : undefined, query, fullSchedule: true };
+  }
+
   if (/когда.*(урок|эфир|трансляц)|покажи.*(урок|эфир|трансляц)|ближайш.*урок/.test(normalized)) {
     const category = findCategory(normalized);
     const query = category || stripPhrases(original, [
@@ -233,6 +245,7 @@ function validateAiIntent(result: unknown): BotIntent {
     mediaScope: ["series", "movie", "both"].includes(String(candidate.mediaScope))
       ? candidate.mediaScope as BotIntent["mediaScope"]
       : "both",
-    onlyUpcoming: candidate.onlyUpcoming === true
+    onlyUpcoming: candidate.onlyUpcoming === true,
+    fullSchedule: candidate.fullSchedule === true
   };
 }

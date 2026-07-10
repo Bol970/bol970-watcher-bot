@@ -1,4 +1,5 @@
 import { LESSON_CATEGORIES, understandIntent } from "./intent";
+import { selectLessonStages } from "./lesson-view";
 import { refreshAll } from "./refresh";
 import {
   addSubscription,
@@ -137,6 +138,7 @@ async function handleCommand(
   if (name === "id" || name === "whoami") return sendMessage(env, chatId, `Ваш Telegram ID: ${telegramId}`);
   if (name === "cancel") return executeIntent(env, telegramId, chatId, role, { action: "cancel" });
   if (name === "lessons") return executeIntent(env, telegramId, chatId, role, { action: "query_lessons", query: arg });
+  if (name === "schedule") return executeIntent(env, telegramId, chatId, role, { action: "query_lessons", query: arg, fullSchedule: true });
   if (name === "media") return executeIntent(env, telegramId, chatId, role, { action: "query_media", query: arg });
   if (name === "films") return executeIntent(env, telegramId, chatId, role, parseFilmsCommand(arg));
   if (name === "new") return executeIntent(env, telegramId, chatId, role, parseNewCommand(arg));
@@ -178,8 +180,12 @@ async function executeIntent(
       await sendHelp(env, chatId);
       return;
     case "query_lessons": {
-      const rows = await queryLiveEvents(env.DB, query);
-      await sendMessage(env, chatId, formatLessons(rows, query));
+      const rows = await queryLiveEvents(env.DB, query, 200);
+      await sendMessage(
+        env,
+        chatId,
+        intent.fullSchedule ? formatFullLessonSchedule(rows, query) : formatLessonTimeline(rows, query)
+      );
       return;
     }
     case "query_media": {
@@ -415,7 +421,8 @@ function sendHelp(env: Env, chatId: string): Promise<void> {
     "",
     "Команды:",
     "/watch — создать подписку",
-    "/lessons [тема] — эфиры",
+    "/lessons [тема] — сейчас, потом и далее",
+    "/schedule [тема] — полное расписание эфиров",
     "/media [название] — будущие релизы",
     "/films [жанр или название] — каталог фильмов",
     "/new [фильмы|сериалы] [жанр] — фактические новинки за 7 дней",
@@ -438,17 +445,47 @@ function watchKeyboard() {
   ]);
 }
 
-function formatLessons(rows: Record<string, unknown>[], query: string): string {
+function formatLessonTimeline(rows: Record<string, unknown>[], query: string): string {
   if (!rows.length) return query
     ? `В расписании на сегодня и завтра ничего не найдено по запросу «${query}».`
     : "В расписании на сегодня и завтра нет текущих или будущих эфиров.";
+  const stages = selectLessonStages(rows);
+  const hasLive = stages[0]?.kind === "live";
+  const blocks = stages.map((stage, index) => {
+    let heading: string;
+    if (stage.kind === "live") {
+      heading = "🔴 Сейчас в эфире";
+    } else {
+      const futureIndex = hasLive ? index - 1 : index;
+      const label = hasLive
+        ? futureIndex === 0 ? "Потом" : "Далее"
+        : futureIndex === 0 ? "Ближайший эфир" : futureIndex === 1 ? "Потом" : "Далее";
+      heading = `${label} — ${formatMoscowDateTime(stage.scheduledAt || "")}`;
+    }
+    return [heading, ...stage.rows.map(formatLessonRow)].join("\n\n");
+  });
+  return `Три ближайших этапа${query ? ` по запросу «${query}»` : ""}:\n\n${blocks.join("\n\n")}`;
+}
+
+function formatFullLessonSchedule(rows: Record<string, unknown>[], query: string): string {
+  if (!rows.length) return query
+    ? `В полном расписании ничего не найдено по запросу «${query}».`
+    : "В полном расписании нет текущих или будущих эфиров.";
   const lines = rows.map((row) => [
     `• ${row.title}`,
     `${row.category}${row.author ? ` · ${row.author}` : ""}`,
     row.status === "live" ? "Сейчас в эфире" : formatMoscowDateTime(String(row.scheduled_at || "")),
     row.status === "live" ? `Смотреть трансляцию: ${row.url}` : row.url
   ].join("\n"));
-  return `Эфиры${query ? ` по запросу «${query}»` : ""}:\n\n${lines.join("\n\n")}`;
+  return `Полное расписание эфиров${query ? ` по запросу «${query}»` : ""}:\n\n${lines.join("\n\n")}`;
+}
+
+function formatLessonRow(row: Record<string, unknown>): string {
+  return [
+    `• ${row.title}`,
+    `${row.category}${row.author ? ` · ${row.author}` : ""}`,
+    row.status === "live" ? `Смотреть трансляцию: ${row.url}` : row.url
+  ].join("\n");
 }
 
 function formatMedia(rows: Record<string, unknown>[], query: string, historical: boolean): string {
