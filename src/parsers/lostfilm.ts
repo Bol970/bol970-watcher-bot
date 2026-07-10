@@ -1,5 +1,5 @@
 import { parse, type HTMLElement } from "node-html-parser";
-import type { LostFilmEvent, MediaMetadata, MediaType } from "../types";
+import type { LostFilmEvent, LostFilmMovieCatalogItem, MediaMetadata, MediaType } from "../types";
 import { absoluteUrl, cleanText, normalizeText, parseRuDate, toIsoDate } from "../utils";
 
 const BASE_URL = "https://www.lostfilm.download";
@@ -26,6 +26,56 @@ interface ParsedHref {
   episode: number | null;
   canonicalPath: string;
   detailsUrl: string;
+}
+
+interface MovieCatalogResponse {
+  result?: unknown;
+  data?: unknown;
+}
+
+export function parseLostFilmMoviesCatalog(input: unknown): LostFilmMovieCatalogItem[] {
+  let payload = input;
+  if (typeof payload === "string") {
+    try {
+      payload = JSON.parse(payload);
+    } catch {
+      throw new Error("LostFilm: movie catalog returned invalid JSON");
+    }
+  }
+  const response = payload as MovieCatalogResponse;
+  if (response?.result !== "ok" || !Array.isArray(response.data)) {
+    throw new Error("LostFilm: movie catalog response is incomplete");
+  }
+
+  const movies: LostFilmMovieCatalogItem[] = [];
+  for (const raw of response.data) {
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as Record<string, unknown>;
+    const link = cleanText(String(item.link || ""));
+    const parsedHref = parseMediaHref(link);
+    const titleRu = cleanText(String(item.title || ""));
+    if (!parsedHref || parsedHref.mediaType !== "movie" || !titleRu) continue;
+    const releaseYearMatch = cleanText(String(item.date || "")).match(/\b(19|20)\d{2}\b/);
+    const ratingValue = Number(item.rating);
+    const genres = cleanText(String(item.genres || ""))
+      .split(",")
+      .map((genre) => cleanText(genre))
+      .filter(Boolean);
+    movies.push({
+      mediaKey: parsedHref.mediaKey,
+      titleRu,
+      titleEn: cleanText(String(item.title_orig || "")),
+      titleNormalized: normalizeText(titleRu),
+      url: parsedHref.detailsUrl,
+      releaseYear: releaseYearMatch ? Number(releaseYearMatch[0]) : null,
+      genres: [...new Set(genres)],
+      rating: Number.isFinite(ratingValue) ? ratingValue : null,
+      notAired: item.not_aired === true || item.not_aired === 1 || item.not_aired === "1",
+      catalogRank: movies.length
+    });
+  }
+  if (!movies.length) throw new Error("LostFilm: movie catalog contains no movies");
+  return deduplicate(movies, (movie) => movie.mediaKey);
 }
 
 export function parseLostFilmSchedule(html: string): LostFilmEvent[] {

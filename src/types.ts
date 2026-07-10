@@ -56,10 +56,24 @@ export interface MediaMetadata {
   genres: string[];
 }
 
+export interface LostFilmMovieCatalogItem {
+  mediaKey: string;
+  titleRu: string;
+  titleEn: string;
+  titleNormalized: string;
+  url: string;
+  releaseYear: number | null;
+  genres: string[];
+  rating: number | null;
+  notAired: boolean;
+  catalogRank: number;
+}
+
 export type IntentAction =
   | "help"
   | "query_lessons"
   | "query_media"
+  | "query_films"
   | "query_new"
   | "query_history"
   | "subscribe_lessons"
@@ -77,6 +91,7 @@ export interface BotIntent {
   filterType?: "category" | "title" | "genre";
   query?: string;
   mediaScope?: "series" | "movie" | "both";
+  onlyUpcoming?: boolean;
 }
 
 export interface RefreshSummary {
@@ -84,6 +99,8 @@ export interface RefreshSummary {
   liveCount: number;
   scheduledCount: number;
   releasedCount: number;
+  catalogCount: number;
+  catalogAdded: number;
   metadataUpdated: number;
   errors: string[];
 }

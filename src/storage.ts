@@ -1,4 +1,4 @@
-import type { LiveEvent, LostFilmEvent, MediaMetadata } from "./types";
+import type { LiveEvent, LostFilmEvent, LostFilmMovieCatalogItem, MediaMetadata } from "./types";
 import { addMinutes, isoNow, looseNormalize, normalizeText, randomId, sha256 } from "./utils";
 
 export interface LiveChange {
@@ -10,6 +10,11 @@ export interface MediaChange {
   type: "new_schedule" | "date_changed" | "released";
   event: LostFilmEvent;
   oldDate?: string | null;
+}
+
+export interface MovieCatalogChange {
+  type: "catalog_added";
+  movie: LostFilmMovieCatalogItem;
 }
 
 export interface SubscriptionRow {
@@ -114,6 +119,13 @@ export async function getSourceStates(db: D1Database): Promise<Record<string, un
     ORDER BY source
   `).all<Record<string, unknown>>();
   return result.results || [];
+}
+
+export async function isSourceInitialized(db: D1Database, source: string): Promise<boolean> {
+  const row = await db.prepare(`
+    SELECT last_success_at FROM source_state WHERE source = ? AND last_success_at IS NOT NULL
+  `).bind(source).first<{ last_success_at: string }>();
+  return Boolean(row?.last_success_at);
 }
 
 export async function syncLiveEvents(db: D1Database, events: LiveEvent[]): Promise<LiveChange[]> {
@@ -342,6 +354,63 @@ export async function saveMediaMetadata(db: D1Database, metadata: MediaMetadata)
   ).run();
 }
 
+export async function upsertLostFilmMovieCatalog(
+  db: D1Database,
+  movies: LostFilmMovieCatalogItem[]
+): Promise<MovieCatalogChange[]> {
+  const now = isoNow();
+  const existing = await getExistingMovieCatalog(db, movies.map((movie) => movie.mediaKey));
+  const changes: MovieCatalogChange[] = [];
+  const statements: D1PreparedStatement[] = [];
+
+  for (const movie of movies) {
+    if (!existing.get(movie.mediaKey)?.catalog_first_seen_at) {
+      changes.push({ type: "catalog_added", movie });
+    }
+    statements.push(db.prepare(`
+      INSERT INTO media_titles (
+        media_key, media_type, title_ru, title_en, title_normalized, url,
+        genres_json, metadata_checked_at, release_year, rating, not_aired,
+        catalog_first_seen_at, catalog_last_seen_at, catalog_rank, created_at, updated_at
+      ) VALUES (?, 'movie', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(media_key) DO UPDATE SET
+        media_type = 'movie',
+        title_ru = excluded.title_ru,
+        title_en = CASE WHEN excluded.title_en IS NOT NULL AND excluded.title_en != ''
+          THEN excluded.title_en ELSE media_titles.title_en END,
+        title_normalized = excluded.title_normalized,
+        url = excluded.url,
+        genres_json = excluded.genres_json,
+        metadata_checked_at = excluded.metadata_checked_at,
+        release_year = excluded.release_year,
+        rating = excluded.rating,
+        not_aired = excluded.not_aired,
+        catalog_first_seen_at = COALESCE(media_titles.catalog_first_seen_at, excluded.catalog_first_seen_at),
+        catalog_last_seen_at = excluded.catalog_last_seen_at,
+        catalog_rank = excluded.catalog_rank,
+        updated_at = excluded.updated_at
+    `).bind(
+      movie.mediaKey,
+      movie.titleRu,
+      movie.titleEn || null,
+      movie.titleNormalized,
+      movie.url,
+      JSON.stringify(movie.genres),
+      now,
+      movie.releaseYear,
+      movie.rating,
+      movie.notAired ? 1 : 0,
+      now,
+      now,
+      movie.catalogRank,
+      now,
+      now
+    ));
+  }
+  await runD1Batches(db, statements);
+  return changes;
+}
+
 export async function getActiveSubscriptions(db: D1Database, domain: "lessons" | "media"): Promise<SubscriptionRow[]> {
   const result = await db.prepare(`
     SELECT s.id, s.telegram_id, u.chat_id, s.domain, s.filter_type,
@@ -519,17 +588,54 @@ export async function queryUpcomingMedia(db: D1Database, query = "", limit = 20)
     .slice(0, limit);
 }
 
-export async function queryNewByGenre(db: D1Database, genre: string, sinceDate: string, limit = 20): Promise<Record<string, unknown>[]> {
+export async function queryMovieCatalog(
+  db: D1Database,
+  query = "",
+  onlyUpcoming = false,
+  limit = 20
+): Promise<Record<string, unknown>[]> {
+  const result = await db.prepare(`
+    SELECT media_key, title_ru, title_en, url, genres_json, release_year,
+           rating, not_aired, catalog_first_seen_at, catalog_rank
+    FROM media_titles
+    WHERE media_type = 'movie' AND catalog_last_seen_at IS NOT NULL
+      AND (? = 0 OR not_aired = 1)
+    ORDER BY catalog_first_seen_at DESC, catalog_rank ASC, not_aired DESC,
+             release_year DESC, rating DESC, title_ru
+    LIMIT 500
+  `).bind(onlyUpcoming ? 1 : 0).all<Record<string, unknown>>();
+  const needle = looseNormalize(query);
+  return (result.results || []).filter((row) => {
+    if (!needle) return true;
+    const titleMatches = looseNormalize(String(row.title_ru || "")).includes(needle) ||
+      looseNormalize(String(row.title_en || "")).includes(needle);
+    try {
+      const genres = JSON.parse(String(row.genres_json || "[]")) as string[];
+      return titleMatches || genres.some((genre) => looseNormalize(genre).includes(needle));
+    } catch {
+      return titleMatches;
+    }
+  }).slice(0, limit);
+}
+
+export async function queryNewByGenre(
+  db: D1Database,
+  genre: string,
+  sinceDate: string,
+  scope: "series" | "movie" | "both" = "both",
+  limit = 20
+): Promise<Record<string, unknown>[]> {
   const normalized = normalizeText(genre);
   const result = await db.prepare(`
     SELECT e.event_key, e.kind, e.title_ru, e.title_en, e.season, e.episode,
-           e.released_date, e.url, m.genres_json
+           e.released_date, e.url, m.genres_json, m.media_type
     FROM lostfilm_events e
     JOIN media_titles m ON m.media_key = e.media_key
     WHERE e.status = 'released' AND e.released_date >= ?
+      AND (? = 'both' OR m.media_type = ?)
     ORDER BY e.released_date DESC, e.title_ru
     LIMIT 100
-  `).bind(sinceDate).all<Record<string, unknown>>();
+  `).bind(sinceDate, scope, scope).all<Record<string, unknown>>();
   return (result.results || []).filter((row) => {
     try {
       const genres = JSON.parse(String(row.genres_json || "[]")) as string[];
@@ -584,6 +690,30 @@ interface ExistingLostFilmEvent {
   event_key: string;
   scheduled_date: string | null;
   status: string;
+}
+
+interface ExistingMovieCatalog {
+  media_key: string;
+  catalog_first_seen_at: string | null;
+}
+
+async function getExistingMovieCatalog(
+  db: D1Database,
+  mediaKeys: string[]
+): Promise<Map<string, ExistingMovieCatalog>> {
+  const existing = new Map<string, ExistingMovieCatalog>();
+  for (let index = 0; index < mediaKeys.length; index += 75) {
+    const keys = mediaKeys.slice(index, index + 75);
+    if (!keys.length) continue;
+    const placeholders = keys.map(() => "?").join(", ");
+    const result = await db.prepare(`
+      SELECT media_key, catalog_first_seen_at
+      FROM media_titles
+      WHERE media_key IN (${placeholders})
+    `).bind(...keys).all<ExistingMovieCatalog>();
+    for (const row of result.results || []) existing.set(row.media_key, row);
+  }
+  return existing;
 }
 
 async function getExistingLostFilmEvents(

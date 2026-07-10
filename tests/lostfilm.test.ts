@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   parseLostFilmMetadata,
+  parseLostFilmMoviesCatalog,
   parseLostFilmNew,
   parseLostFilmSchedule
 } from "../src/parsers/lostfilm";
@@ -65,5 +66,36 @@ describe("LostFilm parsers", () => {
     const metadata = parseLostFilmMetadata(html, "https://www.lostfilm.download/series/The_Bear/");
     expect(metadata.genres).toEqual(["Комедия", "Драма"]);
     expect(metadata.mediaKey).toBe("series:The_Bear");
+  });
+
+  it("parses the movie catalog JSON with genres and upcoming status", () => {
+    const movies = parseLostFilmMoviesCatalog({
+      result: "ok",
+      data: [
+        {
+          alias: "Dune_Part_Three",
+          title: "Дюна: Часть третья",
+          title_orig: "Dune: Part Three",
+          date: "2026",
+          genres: "Драма, Боевик, Научная фантастика",
+          rating: 8.7,
+          not_aired: true,
+          link: "/movies/Dune_Part_Three",
+          ismovie: "1"
+        }
+      ]
+    });
+    expect(movies).toEqual([expect.objectContaining({
+      mediaKey: "movie:Dune_Part_Three",
+      releaseYear: 2026,
+      genres: ["Драма", "Боевик", "Научная фантастика"],
+      rating: 8.7,
+      notAired: true,
+      catalogRank: 0
+    })]);
+  });
+
+  it("rejects an invalid movie catalog response", () => {
+    expect(() => parseLostFilmMoviesCatalog({ result: "error" })).toThrow(/movie catalog response/);
   });
 });

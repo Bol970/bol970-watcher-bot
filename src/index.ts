@@ -10,6 +10,7 @@ import {
   listSubscriptions,
   queryLiveEvents,
   queryMediaHistory,
+  queryMovieCatalog,
   queryNewByGenre,
   queryUpcomingMedia,
   resolveMediaTitle,
@@ -137,7 +138,8 @@ async function handleCommand(
   if (name === "cancel") return executeIntent(env, telegramId, chatId, role, { action: "cancel" });
   if (name === "lessons") return executeIntent(env, telegramId, chatId, role, { action: "query_lessons", query: arg });
   if (name === "media") return executeIntent(env, telegramId, chatId, role, { action: "query_media", query: arg });
-  if (name === "new") return executeIntent(env, telegramId, chatId, role, { action: "query_new", query: arg, filterType: "genre" });
+  if (name === "films") return executeIntent(env, telegramId, chatId, role, parseFilmsCommand(arg));
+  if (name === "new") return executeIntent(env, telegramId, chatId, role, parseNewCommand(arg));
   if (name === "history") return executeIntent(env, telegramId, chatId, role, { action: "query_history", query: arg });
   if (name === "subscriptions") return executeIntent(env, telegramId, chatId, role, { action: "list_subscriptions" });
   if (name === "status") return executeIntent(env, telegramId, chatId, role, { action: "status" });
@@ -185,9 +187,14 @@ async function executeIntent(
       await sendMessage(env, chatId, formatMedia(rows, query, false));
       return;
     }
+    case "query_films": {
+      const rows = await queryMovieCatalog(env.DB, query, intent.onlyUpcoming === true);
+      await sendMessage(env, chatId, formatMovieCatalog(rows, query, intent.onlyUpcoming === true));
+      return;
+    }
     case "query_new": {
       const since = addDays(new Date(), -7).toISOString().slice(0, 10);
-      const rows = await queryNewByGenre(env.DB, query, since);
+      const rows = await queryNewByGenre(env.DB, query, since, intent.mediaScope || "both");
       await sendMessage(env, chatId, formatMedia(rows, query, true));
       return;
     }
@@ -289,6 +296,7 @@ async function executeIntent(
         "Проверка завершена.",
         `LiveClasses: ${summary.liveCount} текущих и будущих эфиров.`,
         `LostFilm: ${summary.scheduledCount} событий в расписании, ${summary.releasedCount} новинок.`,
+        `Каталог фильмов: ${summary.catalogCount}, впервые замечено: ${summary.catalogAdded}.`,
         `Обновлено карточек с жанрами: ${summary.metadataUpdated}.`,
         ...(summary.errors.length ? [`Ошибки: ${summary.errors.join("; ")}`] : ["Ошибок нет."])
       ].join("\n"));
@@ -299,7 +307,7 @@ async function executeIntent(
       await sendMessage(env, chatId, "Текущий диалог отменён.");
       return;
     default:
-      await sendMessage(env, chatId, "Не понял запрос. Попробуйте написать иначе или используйте /watch, /lessons, /media, /new и /help.");
+      await sendMessage(env, chatId, "Не понял запрос. Попробуйте написать иначе или используйте /watch, /lessons, /media, /films, /new и /help.");
   }
 }
 
@@ -333,7 +341,8 @@ async function processCallback(env: Env, callback: TelegramCallbackQuery): Promi
     "dialog:lesson_category": { step: "lesson_category", prompt: "Выберите категорию:" },
     "dialog:lesson_title": { step: "lesson_title", prompt: "Напишите слова из названия урока:" },
     "dialog:media_title": { step: "media_title", prompt: "Напишите название сериала или фильма:" },
-    "dialog:media_genre": { step: "media_genre", prompt: "Напишите жанр новинок:" }
+    "dialog:media_genre": { step: "media_genre", prompt: "Напишите жанр новинок:" },
+    "dialog:movie_genre": { step: "movie_genre", prompt: "Напишите жанр фильмов:" }
   };
   const selected = steps[data];
   if (!selected) {
@@ -376,6 +385,12 @@ async function handleSessionText(
     await sendMessage(env, chatId, `Отслеживаю новинки жанра «${text}».`);
     return;
   }
+  if (step === "movie_genre") {
+    await addSubscription(env.DB, { telegramId, domain: "media", filterType: "genre", filterValue: text, mediaScope: "movie" });
+    await clearDialogSession(env.DB, telegramId);
+    await sendMessage(env, chatId, `Отслеживаю новые фильмы жанра «${text}».`);
+    return;
+  }
   if (step === "unwatch") {
     const count = await deactivateSubscriptions(env.DB, telegramId, text);
     await clearDialogSession(env.DB, telegramId);
@@ -395,12 +410,15 @@ function sendHelp(env: Env, chatId: string): Promise<void> {
     "• Когда будет урок про Blender?",
     "• Следи за сериалом Медведь",
     "• Покажи новинки жанра драма",
+    "• Покажи фильмы жанра фантастика",
+    "• Какие фильмы скоро выйдут?",
     "",
     "Команды:",
     "/watch — создать подписку",
     "/lessons [тема] — эфиры",
     "/media [название] — будущие релизы",
-    "/new [жанр] — новинки за 7 дней",
+    "/films [жанр или название] — каталог фильмов",
+    "/new [фильмы|сериалы] [жанр] — фактические новинки за 7 дней",
     "/history название — история LostFilm",
     "/subscriptions — подписки",
     "/unwatch название — отключить",
@@ -415,7 +433,8 @@ function watchKeyboard() {
     [{ text: "Эфиры по категории", data: "dialog:lesson_category" }],
     [{ text: "Эфиры по названию", data: "dialog:lesson_title" }],
     [{ text: "Сериал или фильм", data: "dialog:media_title" }],
-    [{ text: "Новинки по жанру", data: "dialog:media_genre" }]
+    [{ text: "Новинки по жанру", data: "dialog:media_genre" }],
+    [{ text: "Новые фильмы по жанру", data: "dialog:movie_genre" }]
   ]);
 }
 
@@ -445,6 +464,31 @@ function formatMedia(rows: Record<string, unknown>[], query: string, historical:
   return `${label}${query ? ` по запросу «${query}»` : ""}:\n\n${lines.join("\n\n")}`;
 }
 
+function formatMovieCatalog(rows: Record<string, unknown>[], query: string, onlyUpcoming: boolean): string {
+  if (!rows.length) return query
+    ? `В каталоге фильмов ничего не найдено по запросу «${query}».`
+    : onlyUpcoming
+      ? "В каталоге пока нет отмеченных будущих фильмов."
+      : "Каталог фильмов пока не загружен. Запустите /test.";
+  const lines = rows.map((row) => {
+    let genres: string[] = [];
+    try {
+      genres = JSON.parse(String(row.genres_json || "[]")) as string[];
+    } catch {
+      genres = [];
+    }
+    const details = [
+      Number(row.not_aired) ? "Скоро" : "В каталоге",
+      row.release_year ? String(row.release_year) : "",
+      Number(row.rating) > 0 ? `рейтинг ${row.rating}` : "",
+      genres.join(", ")
+    ].filter(Boolean).join(" · ");
+    return `• ${row.title_ru}${row.title_en ? ` / ${row.title_en}` : ""}\n${details}\n${row.url}`;
+  });
+  const label = onlyUpcoming ? "Будущие фильмы" : "Каталог фильмов";
+  return `${label}${query ? ` по запросу «${query}»` : ""}:\n\n${lines.join("\n\n")}`;
+}
+
 function authorize(env: Env, telegramId: string): "owner" | "teacher" | null {
   if (telegramId && telegramId === String(env.OWNER_TELEGRAM_ID || "")) return "owner";
   if (telegramId && telegramId === String(env.TEACHER_TELEGRAM_ID || "")) return "teacher";
@@ -454,6 +498,29 @@ function authorize(env: Env, telegramId: string): "owner" | "teacher" | null {
 function parseCommand(text: string): { name: string; arg: string } | null {
   const match = text.match(/^\/([a-z_]+)(?:@[a-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
   return match ? { name: match[1]!.toLowerCase(), arg: cleanText(match[2]) } : null;
+}
+
+function parseNewCommand(arg: string): BotIntent {
+  const hasMovies = /(?:^|\s)(фильмы?|кино|movies?)(?=\s|$)/iu.test(arg);
+  const hasSeries = /(?:^|\s)(сериалы?|серии|series)(?=\s|$)/iu.test(arg);
+  const query = cleanText(arg.replace(/(?:^|\s)(фильмы?|кино|movies?|сериалы?|серии|series)(?=\s|$)/giu, " "));
+  return {
+    action: "query_new",
+    query,
+    filterType: "genre",
+    mediaScope: hasMovies && !hasSeries ? "movie" : hasSeries && !hasMovies ? "series" : "both"
+  };
+}
+
+function parseFilmsCommand(arg: string): BotIntent {
+  const onlyUpcoming = /^(скоро|будущие|еще не вышли|ещё не вышли)$/iu.test(cleanText(arg));
+  return {
+    action: "query_films",
+    query: onlyUpcoming ? "" : arg,
+    filterType: arg && !onlyUpcoming ? "genre" : undefined,
+    mediaScope: "movie",
+    onlyUpcoming
+  };
 }
 
 function getChatId(update: TelegramUpdate): string {

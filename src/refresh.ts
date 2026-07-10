@@ -2,6 +2,7 @@ import { parseLiveClasses } from "./parsers/liveclasses";
 import {
   detailsUrlForEvent,
   parseLostFilmMetadata,
+  parseLostFilmMoviesCatalog,
   parseLostFilmNew,
   parseLostFilmSchedule
 } from "./parsers/lostfilm";
@@ -11,6 +12,7 @@ import {
   getActiveSubscriptions,
   getGenresForMedia,
   getMetadataDue,
+  isSourceInitialized,
   markPastLostFilmDates,
   recordSourceFailure,
   recordSourceSuccess,
@@ -19,13 +21,15 @@ import {
   saveMediaMetadata,
   syncLiveEvents,
   upsertLostFilmReleases,
+  upsertLostFilmMovieCatalog,
   upsertLostFilmSchedule,
   type LiveChange,
   type MediaChange,
+  type MovieCatalogChange,
   type SubscriptionRow
 } from "./storage";
 import { sendMessage } from "./telegram";
-import type { Env, LiveEvent, LostFilmEvent, RefreshSummary } from "./types";
+import type { Env, LiveEvent, LostFilmEvent, LostFilmMovieCatalogItem, RefreshSummary } from "./types";
 import {
   addDays,
   formatDate,
@@ -40,6 +44,8 @@ import {
 const LIVECLASSES_URL = "https://liveclasses.ru/schedule/";
 const LOSTFILM_URL = "https://www.lostfilm.download/schedule/";
 const LOSTFILM_NEW_URL = "https://www.lostfilm.download/new/";
+const LOSTFILM_MOVIES_URL = "https://www.lostfilm.download/movies/";
+const LOSTFILM_AJAX_URL = "https://www.lostfilm.download/ajaxik.php";
 const USER_AGENT = "Bol970WatcherBot/1.0 (+https://github.com/Bol970/bol970-watcher-bot)";
 
 export async function refreshAll(env: Env, options: { notify?: boolean } = {}): Promise<RefreshSummary> {
@@ -47,6 +53,8 @@ export async function refreshAll(env: Env, options: { notify?: boolean } = {}): 
     liveCount: 0,
     scheduledCount: 0,
     releasedCount: 0,
+    catalogCount: 0,
+    catalogAdded: 0,
     metadataUpdated: 0,
     errors: []
   };
@@ -59,12 +67,20 @@ export async function refreshAll(env: Env, options: { notify?: boolean } = {}): 
     });
     summary.liveCount = liveResult.count;
 
-    const lostResult = await refreshLostFilm(env, options.notify !== false).catch((error) => {
-      summary.errors.push(`LostFilm: ${safeError(error)}`);
-      return { scheduled: 0, released: 0, metadata: 0 };
-    });
+    const [lostResult, catalogResult] = await Promise.all([
+      refreshLostFilm(env, options.notify !== false).catch((error) => {
+        summary.errors.push(`LostFilm: ${safeError(error)}`);
+        return { scheduled: 0, released: 0, metadata: 0 };
+      }),
+      refreshLostFilmMovieCatalog(env, options.notify !== false).catch((error) => {
+        summary.errors.push(`LostFilm movies: ${safeError(error)}`);
+        return { count: 0, added: 0 };
+      })
+    ]);
     summary.scheduledCount = lostResult.scheduled;
     summary.releasedCount = lostResult.released;
+    summary.catalogCount = catalogResult.count;
+    summary.catalogAdded = catalogResult.added;
     summary.metadataUpdated = lostResult.metadata;
     return summary;
   } finally {
@@ -151,15 +167,49 @@ async function refreshLostFilm(
 
 async function loadRecentLostFilmReleases(): Promise<LostFilmEvent[]> {
   const cutoffDate = addDays(new Date(), -7).toISOString().slice(0, 10);
-  const urls = Array.from({ length: 3 }, (_, index) => {
-    const page = index + 1;
-    const url = page === 1 ? LOSTFILM_NEW_URL : `${LOSTFILM_NEW_URL}page_${page}`;
-    return url;
-  });
-  const pages = await Promise.all(urls.map((url) => fetchText(url)));
-  const events = pages.flatMap((html) => parseLostFilmNew(html))
-    .filter((event) => (event.releasedDate || "") >= cutoffDate);
+  const events: LostFilmEvent[] = [];
+  for (let firstPage = 1; firstPage <= 9; firstPage += 3) {
+    const pageNumbers = [firstPage, firstPage + 1, firstPage + 2];
+    const pages = await Promise.all(pageNumbers.map((page) => fetchText(
+      page === 1 ? LOSTFILM_NEW_URL : `${LOSTFILM_NEW_URL}page_${page}`
+    )));
+    const parsed = pages.flatMap((html) => parseLostFilmNew(html));
+    events.push(...parsed.filter((event) => (event.releasedDate || "") >= cutoffDate));
+    const oldestDate = parsed
+      .map((event) => event.releasedDate || "9999-12-31")
+      .sort()[0];
+    if (!oldestDate || oldestDate < cutoffDate) break;
+  }
   return deduplicate(events, (event) => event.eventKey);
+}
+
+async function refreshLostFilmMovieCatalog(
+  env: Env,
+  notify: boolean
+): Promise<{ count: number; added: number }> {
+  try {
+    const initialized = await isSourceInitialized(env.DB, "lostfilm_movies");
+    const payloads = await Promise.all([0, 20].map((offset) => fetchJsonForm(LOSTFILM_AJAX_URL, {
+      act: "movies",
+      type: "search",
+      o: String(offset),
+      s: "6",
+      t: "0"
+    })));
+    const movies = deduplicate(
+      payloads.flatMap((payload) => parseLostFilmMoviesCatalog(payload)),
+      (movie) => movie.mediaKey
+    ).map((movie, catalogRank) => ({ ...movie, catalogRank }));
+    const changes = await upsertLostFilmMovieCatalog(env.DB, movies);
+    await recordSourceSuccess(env.DB, "lostfilm_movies", LOSTFILM_MOVIES_URL, movies.length);
+    if (notify && initialized) await notifyMovieCatalogChanges(env, changes);
+    return { count: movies.length, added: changes.length };
+  } catch (error) {
+    const message = safeError(error);
+    const failures = await recordSourceFailure(env.DB, "lostfilm_movies", LOSTFILM_MOVIES_URL, message);
+    await maybeNotifyOwnerAboutSource(env, "LostFilm Movies", failures, message);
+    throw error;
+  }
 }
 
 async function notifyLiveChanges(env: Env, changes: LiveChange[]): Promise<void> {
@@ -222,6 +272,23 @@ async function notifyMediaChanges(env: Env, changes: MediaChange[]): Promise<voi
   }
 }
 
+async function notifyMovieCatalogChanges(env: Env, changes: MovieCatalogChange[]): Promise<void> {
+  if (!changes.length) return;
+  const subscriptions = await getActiveSubscriptions(env.DB, "media");
+  for (const change of changes) {
+    for (const subscription of subscriptions) {
+      if (!matchesMovieCatalog(subscription, change.movie)) continue;
+      await deliverOnce(
+        env,
+        subscription,
+        `catalog:${change.movie.mediaKey}`,
+        "media_catalog_added",
+        `Новый фильм в каталоге LostFilm по подписке «${subscription.filter_value}»:\n${formatCatalogMovie(change.movie)}`
+      );
+    }
+  }
+}
+
 async function deliverOnce(
   env: Env,
   subscription: SubscriptionRow,
@@ -253,6 +320,14 @@ function matchesMedia(subscription: SubscriptionRow, event: LostFilmEvent, genre
   return event.titleNormalized.includes(subscription.filter_normalized);
 }
 
+function matchesMovieCatalog(subscription: SubscriptionRow, movie: LostFilmMovieCatalogItem): boolean {
+  if (subscription.media_scope === "series") return false;
+  if (subscription.filter_type === "genre") {
+    return movie.genres.some((genre) => normalizeText(genre).includes(subscription.filter_normalized));
+  }
+  return movie.titleNormalized.includes(subscription.filter_normalized);
+}
+
 function formatLiveEvent(event: LiveEvent): string {
   return [
     event.title,
@@ -266,6 +341,15 @@ function formatMediaEvent(event: LostFilmEvent): string {
   const episode = event.kind === "series_episode" ? ` · ${event.season}x${String(event.episode).padStart(2, "0")}` : "";
   const date = event.status === "released" ? event.releasedDate : event.scheduledDate;
   return `${event.titleRu}${episode}\n${formatDate(date)}\n${event.url}`;
+}
+
+function formatCatalogMovie(movie: LostFilmMovieCatalogItem): string {
+  const details = [
+    movie.notAired ? "Скоро" : "В каталоге",
+    movie.releaseYear ? String(movie.releaseYear) : "",
+    movie.genres.join(", ")
+  ].filter(Boolean).join(" · ");
+  return `${movie.titleRu}${movie.titleEn ? ` / ${movie.titleEn}` : ""}\n${details}\n${movie.url}`;
 }
 
 async function maybeNotifyOwnerAboutSource(
@@ -306,6 +390,28 @@ async function fetchText(url: string, timeoutMs = 12_000): Promise<string> {
     const text = await response.text();
     if (text.length < 500) throw new Error(`${new URL(url).hostname} returned an unexpectedly short page`);
     return text;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchJsonForm(url: string, form: Record<string, string>, timeoutMs = 12_000): Promise<unknown> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+      },
+      body: new URLSearchParams(form).toString(),
+      redirect: "follow",
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error(`${new URL(url).hostname} returned HTTP ${response.status}`);
+    return await response.json();
   } finally {
     clearTimeout(timeout);
   }

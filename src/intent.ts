@@ -40,6 +40,7 @@ export async function understandIntent(env: Env, text: string): Promise<BotInten
             "Ты маршрутизатор Telegram-бота расписаний.",
             "Преобразуй русский запрос только в одно разрешенное действие.",
             `Категории уроков: ${LESSON_CATEGORIES.join(", ")}.`,
+            "query_films означает каталог фильмов; query_new означает фактически вышедшие релизы за 7 дней.",
             "Не придумывай URL, даты или факты. Верни JSON по схеме."
           ].join(" ")
         },
@@ -56,14 +57,15 @@ export async function understandIntent(env: Env, text: string): Promise<BotInten
               action: {
                 type: "string",
                 enum: [
-                  "query_lessons", "query_media", "query_new", "query_history",
+                  "query_lessons", "query_media", "query_films", "query_new", "query_history",
                   "subscribe_lessons", "subscribe_media", "unsubscribe",
                   "list_subscriptions", "status", "test", "unknown"
                 ]
               },
               filterType: { type: "string", enum: ["category", "title", "genre"] },
               query: { type: "string" },
-              mediaScope: { type: "string", enum: ["series", "movie", "both"] }
+              mediaScope: { type: "string", enum: ["series", "movie", "both"] },
+              onlyUpcoming: { type: "boolean" }
             },
             required: ["action", "query"],
             additionalProperties: false
@@ -110,12 +112,19 @@ export function parseDeterministicIntent(text: string): BotIntent {
   }
 
   if (/новинк/.test(normalized)) {
+    const scope = /(фильм|кино|movie)/.test(normalized) && !/(сериал|сери[яи])/.test(normalized)
+      ? "movie"
+      : /(сериал|сери[яи])/.test(normalized) && !/(фильм|кино|movie)/.test(normalized)
+        ? "series"
+        : "both";
     const query = stripPhrases(original, [
       /покажи\s+новинки\s+(по\s+)?(жанр[ау]?\s+)?/iu,
       /новинки\s+(по\s+)?(жанр[ау]?\s+)?/iu,
-      /какие\s+(есть\s+)?новинки\s+(по\s+)?(жанр[ау]?\s+)?/iu
+      /какие\s+(есть\s+)?новинки\s+(по\s+)?(жанр[ау]?\s+)?/iu,
+      /(фильмов|фильмы|фильм|кино|сериалов|сериалы|серии)\s*/iu,
+      /(по\s+)?жанр[ау]?\s*/iu
     ]);
-    return { action: "query_new", filterType: "genre", query, mediaScope: "both" };
+    return { action: "query_new", filterType: "genre", query, mediaScope: scope };
   }
 
   const wantsSubscribe = /^(следи|отслеживай|подпиши|хочу следить)/.test(normalized);
@@ -130,6 +139,15 @@ export function parseDeterministicIntent(text: string): BotIntent {
       filterType: category ? "category" : "title",
       query
     };
+  }
+
+  if (wantsSubscribe && /(фильм|кино)/.test(normalized) && /жанр/.test(normalized)) {
+    const query = stripPhrases(original, [
+      /^(следи|отслеживай|подпиши\s+меня|хочу\s+следить)\s+(за\s+)?/iu,
+      /(новыми\s+)?(фильмами|фильмы|кино)\s*/iu,
+      /(по\s+)?жанр[ау]?\s*/iu
+    ]);
+    return { action: "subscribe_media", filterType: "genre", query, mediaScope: "movie" };
   }
 
   if (wantsSubscribe && /(сериал|фильм|кино|серия)/.test(normalized)) {
@@ -158,6 +176,18 @@ export function parseDeterministicIntent(text: string): BotIntent {
       /расписание\s+(сериала|фильма)?/iu
     ]);
     return { action: "query_media", filterType: "title", query, mediaScope: "both" };
+  }
+
+  if (/(покажи|найди|какие|есть|новые|каталог).*(фильм|кино)|(фильм|кино).*(жанр|скоро|каталог)/.test(normalized)) {
+    const onlyUpcoming = /скоро|еще не выш|ещё не выш|будущ/.test(normalized);
+    const query = stripPhrases(original, [
+      /^(покажи|найди|какие|какой|есть)\s*/iu,
+      /(новые|недавно\s+добавленные|будущие)\s*/iu,
+      /(фильмы|фильм|кино|каталог)\s*/iu,
+      /(по\s+)?жанр[ау]?\s*/iu,
+      /(которые\s+)?(скоро|еще|ещё)\s+(выйдут|не\s+вышли)?/iu
+    ]);
+    return { action: "query_films", filterType: query ? "genre" : undefined, query, mediaScope: "movie", onlyUpcoming };
   }
 
   return { action: "unknown" };
@@ -189,7 +219,7 @@ function validateAiIntent(result: unknown): BotIntent {
   if (!value || typeof value !== "object") return { action: "unknown" };
   const candidate = value as Record<string, unknown>;
   const allowed = new Set([
-    "query_lessons", "query_media", "query_new", "query_history",
+    "query_lessons", "query_media", "query_films", "query_new", "query_history",
     "subscribe_lessons", "subscribe_media", "unsubscribe",
     "list_subscriptions", "status", "test", "unknown"
   ]);
@@ -202,6 +232,7 @@ function validateAiIntent(result: unknown): BotIntent {
       : undefined,
     mediaScope: ["series", "movie", "both"].includes(String(candidate.mediaScope))
       ? candidate.mediaScope as BotIntent["mediaScope"]
-      : "both"
+      : "both",
+    onlyUpcoming: candidate.onlyUpcoming === true
   };
 }
