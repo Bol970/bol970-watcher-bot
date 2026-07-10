@@ -1,0 +1,4 @@
+TELEGRAM_BOT_TOKEN="put-telegram-bot-token-here"
+TELEGRAM_WEBHOOK_SECRET="generate-a-long-random-secret"
+OWNER_TELEGRAM_ID="put-owner-telegram-id-here"
+TEACHER_TELEGRAM_ID="put-teacher-telegram-id-here"

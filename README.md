@@ -1,0 +1,118 @@
+# Bol970 Watcher Bot
+
+Публичный учебный Telegram-агент [@Bol970_watcher_bot](https://t.me/Bol970_watcher_bot) на Cloudflare Workers. Бот следит за бесплатными эфирами LiveClasses и расписанием сериалов/фильмов LostFilm, хранит подписки в D1 и понимает короткие запросы на русском языке.
+
+## Что умеет бот
+
+- показывает текущие и будущие эфиры [LiveClasses](https://liveclasses.ru/schedule/);
+- подписывает на категорию уроков или слова в названии;
+- показывает расписание и фактические выходы [LostFilm](https://www.lostfilm.download/schedule/);
+- подписывает на сериал/фильм или жанр;
+- хранит историю LostFilm, но удаляет прошедшие эфиры LiveClasses;
+- автоматически обновляет источники каждый час;
+- немедленно запускает проверку по `/test`;
+- использует Workers AI только для безопасной маршрутизации пользовательского запроса.
+
+Примеры:
+
+```text
+Следи за уроками по программированию
+Когда будет урок про Blender?
+Следи за сериалом Медведь
+Покажи новинки жанра драма
+Покажи историю выходов Медведь
+```
+
+## Команды
+
+- `/start`, `/help` — справка;
+- `/watch` — пошаговая подписка;
+- `/lessons [тема]` — ближайшие эфиры;
+- `/media [название]` — будущие релизы;
+- `/new [жанр]` — новинки за 7 дней;
+- `/history название` — история LostFilm;
+- `/subscriptions` — активные подписки;
+- `/unwatch название` — отключить подписку;
+- `/test` — немедленно проверить оба источника;
+- `/status` — состояние последнего обновления;
+- `/refresh` — административная проверка владельца;
+- `/cancel` — отменить диалог.
+
+## Архитектура
+
+```text
+Telegram webhook ─┐
+                  ├─> Cloudflare Worker ─> D1
+Hourly Cron ──────┘          │
+                             ├─> LiveClasses adapter
+                             ├─> LostFilm adapter
+                             └─> Workers AI intent router
+```
+
+Worker предоставляет `GET /health` и защищённый `POST /telegram/webhook`. Cron `0 * * * *` выполняет обновление раз в час. `/test` запускает ту же операцию вручную и возвращает количество разобранных событий.
+
+D1 хранит пользователей, состояния источников, текущие эфиры, постоянную историю LostFilm, метаданные жанров, подписки, диалоги и журнал отправленных уведомлений. Полный HTML страниц не сохраняется.
+
+## Безопасность
+
+Реальные значения никогда не должны попадать в Git. Нужные Cloudflare Secrets:
+
+```text
+TELEGRAM_BOT_TOKEN
+TELEGRAM_WEBHOOK_SECRET
+OWNER_TELEGRAM_ID
+TEACHER_TELEGRAM_ID
+```
+
+Числовые Telegram ID, Cloudflare account/database ID, токены и сгенерированный `wrangler.jsonc` находятся только в локальной или Cloudflare-конфигурации. В репозитории размещены безопасные `*.example` файлы.
+
+## Локальная разработка
+
+Нужен Node.js 20+, рекомендуется Node.js 22.
+
+```bash
+npm ci
+cp .env.example .env
+# заполнить локальный .env
+npm run config:render
+npm run db:migrate:local
+npm run dev
+```
+
+Проверки:
+
+```bash
+npm run typecheck
+npm test
+```
+
+Локальный Cron handler Wrangler доступен по адресу:
+
+```bash
+curl "http://localhost:8787/cdn-cgi/handler/scheduled?format=json"
+```
+
+## Развёртывание
+
+1. Создать D1 `bol970_watcher_bot`.
+2. Указать её ID в локальном `.env` и выполнить `npm run config:render`.
+3. Применить `npm run db:migrate:remote`.
+4. Добавить четыре Cloudflare Secret из раздела безопасности.
+5. Выполнить `npm run deploy`.
+6. Установить Telegram webhook на `https://<worker>/telegram/webhook` с `secret_token`.
+7. Проверить `/health`, `getWebhookInfo`, `/start` и `/test`.
+
+## Проверка домашнего задания
+
+1. Открыть [@Bol970_watcher_bot](https://t.me/Bol970_watcher_bot).
+2. Отправить `/start`.
+3. Отправить `/test` — бот сразу проверит оба сайта и покажет результат.
+4. Написать `Следи за уроками по программированию`.
+5. Написать `Следи за сериалом Медведь`.
+6. Запросить `Покажи новинки жанра драма`.
+
+Доступ преподавателя задаётся отдельным Cloudflare Secret и не раскрывается в репозитории.
+
+## Лицензия
+
+[MIT](LICENSE)

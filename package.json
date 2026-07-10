@@ -1,0 +1,28 @@
+{
+  "name": "bol970-watcher-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "config:render": "node scripts/render-config.mjs",
+    "dev": "wrangler dev --config wrangler.jsonc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "deploy": "wrangler deploy --config wrangler.jsonc",
+    "db:migrate:local": "wrangler d1 migrations apply bol970_watcher_bot --local --config wrangler.jsonc",
+    "db:migrate:remote": "wrangler d1 migrations apply bol970_watcher_bot --remote --config wrangler.jsonc"
+  },
+  "dependencies": {
+    "node-html-parser": "^7.0.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260710.1",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.110.0"
+  }
+}
