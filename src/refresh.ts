@@ -110,15 +110,21 @@ async function refreshLostFilm(
     await markPastLostFilmDates(env.DB, toIsoDate(todayParts.year, todayParts.month, todayParts.day));
 
     let metadataUpdated = 0;
-    for (const item of await getMetadataDue(env.DB, 16)) {
-      try {
-        const html = await fetchText(item.url);
-        const metadata = parseLostFilmMetadata(html, item.url);
-        await saveMediaMetadata(env.DB, metadata);
-        metadataUpdated += 1;
-      } catch (error) {
-        console.error("failed to refresh LostFilm metadata", item.media_key, safeError(error));
-      }
+    const metadataDue = await getMetadataDue(env.DB, 16);
+    for (let index = 0; index < metadataDue.length; index += 4) {
+      const batch = metadataDue.slice(index, index + 4);
+      const results = await Promise.all(batch.map(async (item) => {
+        try {
+          const html = await fetchText(item.url);
+          const metadata = parseLostFilmMetadata(html, item.url);
+          await saveMediaMetadata(env.DB, metadata);
+          return 1;
+        } catch (error) {
+          console.error("failed to refresh LostFilm metadata", item.media_key, safeError(error));
+          return 0;
+        }
+      }));
+      metadataUpdated += results.reduce<number>((sum, value) => sum + value, 0);
     }
 
     await recordSourceSuccess(
