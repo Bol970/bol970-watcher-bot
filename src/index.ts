@@ -421,7 +421,7 @@ function sendHelp(env: Env, chatId: string): Promise<void> {
     "",
     "Команды:",
     "/watch — создать подписку",
-    "/lessons [тема] — сейчас, потом и далее",
+    "/lessons [тема] — три блока по 5 уроков",
     "/schedule [тема] — полное расписание эфиров",
     "/media [название] — будущие релизы",
     "/films [жанр или название] — каталог фильмов",
@@ -454,13 +454,13 @@ function formatLessonTimeline(rows: Record<string, unknown>[], query: string): s
   const blocks = stages.map((stage, index) => {
     let heading: string;
     if (stage.kind === "live") {
-      heading = "🔴 Сейчас в эфире";
+      heading = "🔴 Сейчас в эфире — до 5 уроков";
     } else {
       const futureIndex = hasLive ? index - 1 : index;
       const label = hasLive
-        ? futureIndex === 0 ? "Потом" : "Далее"
-        : futureIndex === 0 ? "Ближайший эфир" : futureIndex === 1 ? "Потом" : "Далее";
-      heading = `${label} — ${formatMoscowDateTime(stage.scheduledAt || "")}`;
+        ? futureIndex === 0 ? "Потом — следующие 5" : "Далее — ещё 5"
+        : futureIndex === 0 ? "Ближайшие 5" : futureIndex === 1 ? "Потом — следующие 5" : "Далее — ещё 5";
+      heading = label;
     }
     const hint = stage.kind === "live"
       ? ["На странице урока нажмите «Смотреть прямую трансляцию прямо сейчас»."]
@@ -489,9 +489,10 @@ function formatFullLessonSchedule(rows: Record<string, unknown>[], query: string
 function formatLessonRow(row: Record<string, unknown>): string {
   return [
     `• ${row.title}`,
+    row.status === "live" ? "" : formatMoscowDateTime(String(row.scheduled_at || "")),
     `${row.category}${row.author ? ` · ${row.author}` : ""}`,
     row.status === "live" ? `Открыть страницу трансляции: ${row.url}` : row.url
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function formatMedia(rows: Record<string, unknown>[], query: string, historical: boolean): string {

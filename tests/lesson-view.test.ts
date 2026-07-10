@@ -2,29 +2,32 @@ import { describe, expect, it } from "vitest";
 import { selectLessonStages } from "../src/lesson-view";
 
 describe("lesson timeline", () => {
-  it("groups concurrent lessons into three chronological stages", () => {
+  it("returns up to five live lessons and two batches of five future lessons", () => {
     const rows = [
-      { title: "Live A", status: "live", scheduled_at: null },
-      { title: "Live B", status: "live", scheduled_at: null },
-      { title: "Next A", status: "upcoming", scheduled_at: "2026-07-10T10:00:00.000Z" },
-      { title: "Next B", status: "upcoming", scheduled_at: "2026-07-10T10:00:00.000Z" },
-      { title: "Later", status: "upcoming", scheduled_at: "2026-07-10T11:00:00.000Z" },
-      { title: "Not shown", status: "upcoming", scheduled_at: "2026-07-10T12:00:00.000Z" }
+      ...Array.from({ length: 6 }, (_, index) => ({ title: `Live ${index + 1}`, status: "live", scheduled_at: null })),
+      ...Array.from({ length: 12 }, (_, index) => ({
+        title: `Future ${index + 1}`,
+        status: "upcoming",
+        scheduled_at: `2026-07-10T${String(10 + Math.floor(index / 2)).padStart(2, "0")}:${index % 2 ? "10" : "00"}:00.000Z`
+      }))
     ];
     const stages = selectLessonStages(rows);
     expect(stages).toHaveLength(3);
-    expect(stages[0]!.rows.map((row) => row.title)).toEqual(["Live A", "Live B"]);
-    expect(stages[1]!.rows.map((row) => row.title)).toEqual(["Next A", "Next B"]);
-    expect(stages[2]!.rows.map((row) => row.title)).toEqual(["Later"]);
+    expect(stages.map((stage) => stage.rows)).toHaveLength(3);
+    expect(stages.map((stage) => stage.rows.length)).toEqual([5, 5, 5]);
+    expect(stages[1]!.rows.map((row) => row.title)).toEqual(["Future 1", "Future 2", "Future 3", "Future 4", "Future 5"]);
+    expect(stages[2]!.rows.map((row) => row.title)).toEqual(["Future 6", "Future 7", "Future 8", "Future 9", "Future 10"]);
   });
 
-  it("uses the first three future slots when nothing is live", () => {
-    const rows = [
-      { title: "Third", status: "upcoming", scheduled_at: "2026-07-10T12:00:00.000Z" },
-      { title: "First", status: "upcoming", scheduled_at: "2026-07-10T10:00:00.000Z" },
-      { title: "Second", status: "upcoming", scheduled_at: "2026-07-10T11:00:00.000Z" },
-      { title: "Fourth", status: "upcoming", scheduled_at: "2026-07-10T13:00:00.000Z" }
-    ];
-    expect(selectLessonStages(rows).map((stage) => stage.rows[0]!.title)).toEqual(["First", "Second", "Third"]);
+  it("returns three batches of five future lessons when nothing is live", () => {
+    const rows = Array.from({ length: 16 }, (_, index) => ({
+      title: `Future ${16 - index}`,
+      status: "upcoming",
+      scheduled_at: `2026-07-${String(26 - index).padStart(2, "0")}T10:00:00.000Z`
+    }));
+    const stages = selectLessonStages(rows);
+    expect(stages.map((stage) => stage.rows.length)).toEqual([5, 5, 5]);
+    expect(stages[0]!.rows[0]!.title).toBe("Future 1");
+    expect(stages[2]!.rows[4]!.title).toBe("Future 15");
   });
 });

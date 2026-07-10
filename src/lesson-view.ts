@@ -1,33 +1,26 @@
 export interface LessonStage {
   kind: "live" | "upcoming";
-  scheduledAt: string | null;
   rows: Record<string, unknown>[];
 }
 
 export function selectLessonStages(
   rows: Record<string, unknown>[],
+  positionsPerStage = 5,
   maximumStages = 3
 ): LessonStage[] {
-  if (maximumStages <= 0) return [];
+  if (maximumStages <= 0 || positionsPerStage <= 0) return [];
   const stages: LessonStage[] = [];
-  const liveRows = rows.filter((row) => row.status === "live");
+  const liveRows = rows.filter((row) => row.status === "live").slice(0, positionsPerStage);
   if (liveRows.length) {
-    stages.push({ kind: "live", scheduledAt: null, rows: liveRows });
+    stages.push({ kind: "live", rows: liveRows });
   }
 
-  const upcoming = new Map<string, Record<string, unknown>[]>();
-  for (const row of rows) {
-    if (row.status === "live") continue;
-    const scheduledAt = String(row.scheduled_at || "");
-    if (!scheduledAt) continue;
-    const group = upcoming.get(scheduledAt) || [];
-    group.push(row);
-    upcoming.set(scheduledAt, group);
-  }
-  const ordered = [...upcoming.entries()].sort(([left], [right]) => left.localeCompare(right));
-  for (const [scheduledAt, stageRows] of ordered) {
+  const upcoming = rows
+    .filter((row) => row.status !== "live" && row.scheduled_at)
+    .sort((left, right) => String(left.scheduled_at).localeCompare(String(right.scheduled_at)));
+  for (let offset = 0; offset < upcoming.length; offset += positionsPerStage) {
     if (stages.length >= maximumStages) break;
-    stages.push({ kind: "upcoming", scheduledAt, rows: stageRows });
+    stages.push({ kind: "upcoming", rows: upcoming.slice(offset, offset + positionsPerStage) });
   }
   return stages;
 }
