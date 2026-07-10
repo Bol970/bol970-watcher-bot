@@ -55,6 +55,13 @@ export async function answerCallbackQuery(env: Env, callbackQueryId: string, tex
   });
 }
 
+export async function setBotCommands(
+  env: Env,
+  commands: { command: string; description: string }[]
+): Promise<void> {
+  await telegramApi(env, "setMyCommands", { commands });
+}
+
 export function inlineKeyboard(rows: { text: string; data: string }[][]): ReplyMarkup {
   return {
     inline_keyboard: rows.map((row) => row.map((item) => ({

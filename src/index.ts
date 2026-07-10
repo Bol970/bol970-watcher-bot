@@ -20,6 +20,7 @@ import {
 import {
   answerCallbackQuery,
   inlineKeyboard,
+  setBotCommands,
   sendMessage,
   type TelegramCallbackQuery,
   type TelegramMessage,
@@ -135,6 +136,9 @@ async function handleCommand(
   arg: string
 ): Promise<void> {
   if (name === "start" || name === "help" || name === "menu") {
+    if (name === "start") {
+      await configureBotCommands(env).catch((error) => console.warn("could not update Telegram command menu", safeError(error)));
+    }
     await clearDialogSession(env.DB, telegramId);
     return sendHelp(env, chatId);
   }
@@ -485,6 +489,26 @@ function sendHelp(env: Env, chatId: string): Promise<void> {
     "/status — состояние источников",
     "/cancel — отменить диалог"
   ].join("\n"), mainMenuKeyboard());
+}
+
+function configureBotCommands(env: Env): Promise<void> {
+  return setBotCommands(env, [
+    { command: "start", description: "Открыть кнопочное меню" },
+    { command: "menu", description: "Главное меню" },
+    { command: "watch", description: "Создать подписку" },
+    { command: "lessons", description: "Ближайшие эфиры LiveClasses" },
+    { command: "schedule", description: "Полное расписание эфиров" },
+    { command: "teacher", description: "Найти эфиры преподавателя" },
+    { command: "media", description: "Будущие релизы LostFilm" },
+    { command: "films", description: "Каталог фильмов" },
+    { command: "new", description: "Новинки за 7 дней" },
+    { command: "history", description: "История выходов" },
+    { command: "subscriptions", description: "Мои подписки" },
+    { command: "unwatch", description: "Отключить подписку" },
+    { command: "test", description: "Проверить источники сейчас" },
+    { command: "status", description: "Состояние источников" },
+    { command: "cancel", description: "Отменить текущий диалог" }
+  ]);
 }
 
 function mainMenuKeyboard() {
