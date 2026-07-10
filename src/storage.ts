@@ -181,24 +181,25 @@ export async function upsertLostFilmSchedule(
 ): Promise<MediaChange[]> {
   const now = isoNow();
   const changes: MediaChange[] = [];
+  const existing = await getExistingLostFilmEvents(db, events.map((event) => event.eventKey));
+  const media = [...new Map(events.map((event) => [event.mediaKey, event])).values()];
+  await runD1Batches(db, media.map((event) => mediaPlaceholderStatement(db, event, now)));
+  const statements: D1PreparedStatement[] = [];
 
   for (const event of events) {
-    await ensureMediaPlaceholder(db, event, now);
-    const old = await db.prepare(`
-      SELECT scheduled_date, status FROM lostfilm_events WHERE event_key = ?
-    `).bind(event.eventKey).first<{ scheduled_date: string | null; status: string }>();
+    const old = existing.get(event.eventKey);
 
     if (!old) {
       changes.push({ type: "new_schedule", event });
     } else if (old.scheduled_date !== event.scheduledDate) {
       changes.push({ type: "date_changed", event, oldDate: old.scheduled_date });
-      await db.prepare(`
+      statements.push(db.prepare(`
         INSERT INTO lostfilm_date_history (event_key, old_date, new_date, observed_at)
         VALUES (?, ?, ?, ?)
-      `).bind(event.eventKey, old.scheduled_date, event.scheduledDate, now).run();
+      `).bind(event.eventKey, old.scheduled_date, event.scheduledDate, now));
     }
 
-    await db.prepare(`
+    statements.push(db.prepare(`
       INSERT INTO lostfilm_events (
         event_key, media_key, kind, title_ru, title_en, title_normalized,
         season, episode, scheduled_date, first_scheduled_date, released_date,
@@ -230,8 +231,9 @@ export async function upsertLostFilmSchedule(
       event.url,
       now,
       now
-    ).run();
+    ));
   }
+  await runD1Batches(db, statements);
   return changes;
 }
 
@@ -241,14 +243,16 @@ export async function upsertLostFilmReleases(
 ): Promise<MediaChange[]> {
   const now = isoNow();
   const changes: MediaChange[] = [];
+  const existing = await getExistingLostFilmEvents(db, events.map((event) => event.eventKey));
+  const media = [...new Map(events.map((event) => [event.mediaKey, event])).values()];
+  await runD1Batches(db, media.map((event) => mediaPlaceholderStatement(db, event, now)));
+  const statements: D1PreparedStatement[] = [];
+
   for (const event of events) {
-    await ensureMediaPlaceholder(db, event, now);
-    const old = await db.prepare(`
-      SELECT status, scheduled_date FROM lostfilm_events WHERE event_key = ?
-    `).bind(event.eventKey).first<{ status: string; scheduled_date: string | null }>();
+    const old = existing.get(event.eventKey);
     if (!old || old.status !== "released") changes.push({ type: "released", event });
 
-    await db.prepare(`
+    statements.push(db.prepare(`
       INSERT INTO lostfilm_events (
         event_key, media_key, kind, title_ru, title_en, title_normalized,
         season, episode, scheduled_date, first_scheduled_date, released_date,
@@ -282,8 +286,9 @@ export async function upsertLostFilmReleases(
       event.url,
       now,
       now
-    ).run();
+    ));
   }
+  await runD1Batches(db, statements);
   return changes;
 }
 
@@ -575,11 +580,46 @@ export async function getGenresForMedia(db: D1Database, mediaKey: string): Promi
   }
 }
 
-async function ensureMediaPlaceholder(db: D1Database, event: LostFilmEvent, now: string): Promise<void> {
+interface ExistingLostFilmEvent {
+  event_key: string;
+  scheduled_date: string | null;
+  status: string;
+}
+
+async function getExistingLostFilmEvents(
+  db: D1Database,
+  eventKeys: string[]
+): Promise<Map<string, ExistingLostFilmEvent>> {
+  const existing = new Map<string, ExistingLostFilmEvent>();
+  for (let index = 0; index < eventKeys.length; index += 75) {
+    const keys = eventKeys.slice(index, index + 75);
+    if (!keys.length) continue;
+    const placeholders = keys.map(() => "?").join(", ");
+    const result = await db.prepare(`
+      SELECT event_key, scheduled_date, status
+      FROM lostfilm_events
+      WHERE event_key IN (${placeholders})
+    `).bind(...keys).all<ExistingLostFilmEvent>();
+    for (const row of result.results || []) existing.set(row.event_key, row);
+  }
+  return existing;
+}
+
+async function runD1Batches(db: D1Database, statements: D1PreparedStatement[]): Promise<void> {
+  for (let index = 0; index < statements.length; index += 50) {
+    await db.batch(statements.slice(index, index + 50));
+  }
+}
+
+function mediaPlaceholderStatement(
+  db: D1Database,
+  event: LostFilmEvent,
+  now: string
+): D1PreparedStatement {
   const detailsUrl = event.mediaType === "series"
     ? event.url.replace(/\/season_\d+.*$/i, "/")
     : event.url.replace(/\/$/, "");
-  await db.prepare(`
+  return db.prepare(`
     INSERT INTO media_titles (
       media_key, media_type, title_ru, title_en, title_normalized,
       url, genres_json, created_at, updated_at
@@ -599,5 +639,5 @@ async function ensureMediaPlaceholder(db: D1Database, event: LostFilmEvent, now:
     detailsUrl,
     now,
     now
-  ).run();
+  );
 }

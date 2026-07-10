@@ -97,35 +97,19 @@ async function refreshLostFilm(
 ): Promise<{ scheduled: number; released: number; metadata: number }> {
   try {
     const scheduleUrls = lostFilmScheduleUrls(new Date());
-    const schedulePages = await Promise.all(scheduleUrls.map((url) => fetchText(url)));
+    const [schedulePages, releasedEvents] = await Promise.all([
+      Promise.all(scheduleUrls.map((url) => fetchText(url))),
+      loadRecentLostFilmReleases()
+    ]);
     const scheduledEvents = deduplicate(
       schedulePages.flatMap((html) => parseLostFilmSchedule(html)),
       (event) => event.eventKey
     );
     const scheduleChanges = await upsertLostFilmSchedule(env.DB, scheduledEvents);
 
-    const releasedEvents = await loadRecentLostFilmReleases();
     const releaseChanges = await upsertLostFilmReleases(env.DB, releasedEvents);
     const todayParts = moscowDateParts(new Date());
     await markPastLostFilmDates(env.DB, toIsoDate(todayParts.year, todayParts.month, todayParts.day));
-
-    let metadataUpdated = 0;
-    const metadataDue = await getMetadataDue(env.DB, 16);
-    for (let index = 0; index < metadataDue.length; index += 4) {
-      const batch = metadataDue.slice(index, index + 4);
-      const results = await Promise.all(batch.map(async (item) => {
-        try {
-          const html = await fetchText(item.url);
-          const metadata = parseLostFilmMetadata(html, item.url);
-          await saveMediaMetadata(env.DB, metadata);
-          return 1;
-        } catch (error) {
-          console.error("failed to refresh LostFilm metadata", item.media_key, safeError(error));
-          return 0;
-        }
-      }));
-      metadataUpdated += results.reduce<number>((sum, value) => sum + value, 0);
-    }
 
     await recordSourceSuccess(
       env.DB,
@@ -133,6 +117,21 @@ async function refreshLostFilm(
       LOSTFILM_URL,
       scheduledEvents.length + releasedEvents.length
     );
+
+    let metadataUpdated = 0;
+    const metadataDue = await getMetadataDue(env.DB, 4);
+    const metadataResults = await Promise.all(metadataDue.map(async (item) => {
+      try {
+        const html = await fetchText(item.url, 5_000);
+        const metadata = parseLostFilmMetadata(html, item.url);
+        await saveMediaMetadata(env.DB, metadata);
+        return 1;
+      } catch (error) {
+        console.error("failed to refresh LostFilm metadata", item.media_key, safeError(error));
+        return 0;
+      }
+    }));
+    metadataUpdated = metadataResults.reduce<number>((sum, value) => sum + value, 0);
     if (notify) {
       await notifyMediaChanges(env, scheduleChanges);
       await notifyMediaChanges(env, releaseChanges);
@@ -152,16 +151,14 @@ async function refreshLostFilm(
 
 async function loadRecentLostFilmReleases(): Promise<LostFilmEvent[]> {
   const cutoffDate = addDays(new Date(), -7).toISOString().slice(0, 10);
-  const events: LostFilmEvent[] = [];
-  for (let page = 1; page <= 3; page += 1) {
+  const urls = Array.from({ length: 3 }, (_, index) => {
+    const page = index + 1;
     const url = page === 1 ? LOSTFILM_NEW_URL : `${LOSTFILM_NEW_URL}page_${page}`;
-    const parsed = parseLostFilmNew(await fetchText(url));
-    events.push(...parsed.filter((event) => (event.releasedDate || "") >= cutoffDate));
-    const oldest = parsed
-      .map((event) => event.releasedDate || "9999-12-31")
-      .sort()[0];
-    if (!oldest || oldest < cutoffDate) break;
-  }
+    return url;
+  });
+  const pages = await Promise.all(urls.map((url) => fetchText(url)));
+  const events = pages.flatMap((html) => parseLostFilmNew(html))
+    .filter((event) => (event.releasedDate || "") >= cutoffDate);
   return deduplicate(events, (event) => event.eventKey);
 }
 
@@ -293,9 +290,9 @@ function lostFilmScheduleUrls(now: Date): string[] {
   return [LOSTFILM_URL, `https://www.lostfilm.download/schedule/type_1/month_${nextMonth}`];
 }
 
-async function fetchText(url: string): Promise<string> {
+async function fetchText(url: string, timeoutMs = 12_000): Promise<string> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20_000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
       headers: {
