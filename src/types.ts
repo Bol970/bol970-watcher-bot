@@ -91,6 +91,7 @@ export interface BotIntent {
   filterType?: "category" | "title" | "genre";
   query?: string;
   lessonField?: "all" | "teacher";
+  page?: number;
   mediaScope?: "series" | "movie" | "both";
   onlyUpcoming?: boolean;
   fullSchedule?: boolean;

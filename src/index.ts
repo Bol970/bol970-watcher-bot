@@ -19,6 +19,7 @@ import {
 } from "./storage";
 import {
   answerCallbackQuery,
+  editMessage,
   inlineKeyboard,
   setBotCommands,
   sendMessage,
@@ -28,6 +29,8 @@ import {
 } from "./telegram";
 import type { BotIntent, Env } from "./types";
 import { addDays, cleanText, formatDate, formatMoscowDateTime, jsonResponse, safeError } from "./utils";
+
+const PAGE_SIZE = 5;
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -193,6 +196,10 @@ async function executeIntent(
       await sendHelp(env, chatId);
       return;
     case "query_lessons": {
+      if (intent.fullSchedule && !query) {
+        await showLessonSchedulePage(env, chatId, intent.page || 0);
+        return;
+      }
       const rows = await queryLiveEvents(env.DB, query, 200, intent.lessonField || "all");
       await sendMessage(
         env,
@@ -203,28 +210,51 @@ async function executeIntent(
       return;
     }
     case "query_media": {
+      if (!query) {
+        await showUpcomingMediaPage(env, chatId, intent.page || 0);
+        return;
+      }
       const rows = await queryUpcomingMedia(env.DB, query);
-      await sendMessage(env, chatId, formatMedia(rows, query, false));
+      await sendMessage(env, chatId, formatMedia(rows, query, false), mediaSearchResultKeyboard());
       return;
     }
     case "query_films": {
+      if (!query) {
+        await showMovieCatalogPage(env, chatId, intent.page || 0, intent.onlyUpcoming === true);
+        return;
+      }
       const rows = await queryMovieCatalog(env.DB, query, intent.onlyUpcoming === true);
-      await sendMessage(env, chatId, formatMovieCatalog(rows, query, intent.onlyUpcoming === true));
+      await sendMessage(
+        env,
+        chatId,
+        formatMovieCatalog(rows, query, intent.onlyUpcoming === true),
+        movieSearchResultKeyboard()
+      );
       return;
     }
     case "query_new": {
       const since = addDays(new Date(), -7).toISOString().slice(0, 10);
-      const rows = await queryNewByGenre(env.DB, query, since, intent.mediaScope || "both");
-      await sendMessage(env, chatId, formatMedia(rows, query, true));
+      const scope = intent.mediaScope || "both";
+      if (!query) {
+        await showNewReleasesPage(env, chatId, intent.page || 0, scope);
+        return;
+      }
+      const rows = await queryNewByGenre(env.DB, query, since, scope);
+      await sendMessage(
+        env,
+        chatId,
+        formatMedia(rows, query, true, undefined, "Новинки LostFilm за 7 дней"),
+        newSearchResultKeyboard(scope)
+      );
       return;
     }
     case "query_history": {
       if (!query) {
-        await sendMessage(env, chatId, "Укажите название, например: /history Медведь");
+        await sendMessage(env, chatId, "Укажите название, например: /history Медведь", historyResultKeyboard());
         return;
       }
       const rows = await queryMediaHistory(env.DB, query);
-      await sendMessage(env, chatId, formatMedia(rows, query, true));
+      await sendMessage(env, chatId, formatMedia(rows, query, true), historyResultKeyboard());
       return;
     }
     case "subscribe_lessons": {
@@ -271,22 +301,13 @@ async function executeIntent(
       return;
     }
     case "list_subscriptions": {
-      const rows = await listSubscriptions(env.DB, telegramId);
-      if (!rows.length) {
-        await sendMessage(env, chatId, "Активных подписок пока нет. Используйте /watch.");
-        return;
-      }
-      const lines = rows.map((row, index) => {
-        const domain = row.domain === "lessons" ? "эфиры" : "LostFilm";
-        return `${index + 1}. ${domain}: ${row.filter_value}`;
-      });
-      await sendMessage(env, chatId, `Ваши подписки:\n${lines.join("\n")}`);
+      await showSubscriptionsPage(env, telegramId, chatId, intent.page || 0);
       return;
     }
     case "status": {
       const states = await getSourceStates(env.DB);
       if (!states.length) {
-        await sendMessage(env, chatId, "Источники ещё не проверялись. Запустите /test.");
+        await sendMessage(env, chatId, "Источники ещё не проверялись. Запустите /test.", statusKeyboard());
         return;
       }
       const lines = states.map((row) => [
@@ -295,7 +316,7 @@ async function executeIntent(
         `объектов: ${row.last_item_count || 0}`,
         Number(row.consecutive_failures || 0) ? `ошибок подряд: ${row.consecutive_failures}` : "ошибок нет"
       ].join(" · "));
-      await sendMessage(env, chatId, lines.join("\n"));
+      await sendMessage(env, chatId, lines.join("\n"), statusKeyboard());
       return;
     }
     case "test":
@@ -319,7 +340,7 @@ async function executeIntent(
         `Каталог фильмов: ${summary.catalogCount}, впервые замечено: ${summary.catalogAdded}.`,
         `Обновлено карточек с жанрами: ${summary.metadataUpdated}.`,
         ...(summary.errors.length ? [`Ошибки: ${summary.errors.join("; ")}`] : ["Ошибок нет."])
-      ].join("\n"));
+      ].join("\n"), afterRefreshKeyboard());
       return;
     }
     case "cancel":
@@ -341,6 +362,57 @@ async function processCallback(env: Env, callback: TelegramCallbackQuery): Promi
   }
   await ensureUser(env.DB, telegramId, chatId, role);
   const data = callback.data || "";
+  const subscriptionsPage = data.match(/^subscriptions:page:(\d{1,2})$/);
+  if (subscriptionsPage) {
+    const page = Math.min(40, Number(subscriptionsPage[1] || 0));
+    await clearDialogSession(env.DB, telegramId);
+    await answerCallbackQuery(env, callback.id);
+    await showSubscriptionsPage(env, telegramId, chatId, page, callback.message?.message_id);
+    return;
+  }
+  const schedulePage = data.match(/^schedule:page:(\d{1,2})$/);
+  if (schedulePage) {
+    const page = Math.min(40, Number(schedulePage[1] || 0));
+    await clearDialogSession(env.DB, telegramId);
+    await answerCallbackQuery(env, callback.id);
+    await showLessonSchedulePage(env, chatId, page, callback.message?.message_id);
+    return;
+  }
+  const mediaPage = data.match(/^media:page:(\d{1,2})$/);
+  if (mediaPage) {
+    const page = Math.min(40, Number(mediaPage[1] || 0));
+    await clearDialogSession(env.DB, telegramId);
+    await answerCallbackQuery(env, callback.id);
+    await showUpcomingMediaPage(env, chatId, page, callback.message?.message_id);
+    return;
+  }
+  const moviePage = data.match(/^films:page:(all|future):(\d{1,2})$/);
+  if (moviePage) {
+    const page = Math.min(40, Number(moviePage[2] || 0));
+    await clearDialogSession(env.DB, telegramId);
+    await answerCallbackQuery(env, callback.id);
+    await showMovieCatalogPage(env, chatId, page, moviePage[1] === "future", callback.message?.message_id);
+    return;
+  }
+  const newPage = data.match(/^new:page:(both|series|movie):(\d{1,2})$/);
+  if (newPage) {
+    const page = Math.min(40, Number(newPage[2] || 0));
+    await clearDialogSession(env.DB, telegramId);
+    await answerCallbackQuery(env, callback.id);
+    await showNewReleasesPage(
+      env,
+      chatId,
+      page,
+      newPage[1] as "both" | "series" | "movie",
+      callback.message?.message_id
+    );
+    return;
+  }
+  if (data.startsWith("page:info:")) {
+    const page = Number(data.split(":")[2] || 0) + 1;
+    await answerCallbackQuery(env, callback.id, `Страница ${page}`);
+    return;
+  }
   const menuIntents: Record<string, BotIntent> = {
     "menu:lessons": { action: "query_lessons" },
     "menu:schedule": { action: "query_lessons", fullSchedule: true },
@@ -348,7 +420,8 @@ async function processCallback(env: Env, callback: TelegramCallbackQuery): Promi
     "menu:films": { action: "query_films", mediaScope: "movie" },
     "menu:new": { action: "query_new", mediaScope: "both" },
     "menu:subscriptions": { action: "list_subscriptions" },
-    "menu:status": { action: "status" }
+    "menu:status": { action: "status" },
+    "menu:test": { action: "test" }
   };
   if (menuIntents[data]) {
     await clearDialogSession(env.DB, telegramId);
@@ -549,6 +622,245 @@ function lessonResultKeyboard() {
   ]);
 }
 
+async function showLessonSchedulePage(
+  env: Env,
+  chatId: string,
+  page: number,
+  messageId?: number
+): Promise<void> {
+  const safePage = safePageNumber(page);
+  const rows = await queryLiveEvents(env.DB, "", PAGE_SIZE + 1, "all", safePage * PAGE_SIZE);
+  const hasNext = rows.length > PAGE_SIZE;
+  await sendOrEdit(
+    env,
+    chatId,
+    messageId,
+    formatFullLessonSchedule(rows.slice(0, PAGE_SIZE), "", safePage + 1),
+    inlineKeyboard([
+      paginationButtons("schedule:page", safePage, hasNext),
+      [
+        { text: "📺 Эфиры сейчас", data: "menu:lessons" },
+        { text: "👨‍🏫 Преподаватель", data: "menu:teacher" }
+      ],
+      [{ text: "🏠 Главное меню", data: "menu:help" }]
+    ])
+  );
+}
+
+async function showUpcomingMediaPage(
+  env: Env,
+  chatId: string,
+  page: number,
+  messageId?: number
+): Promise<void> {
+  const safePage = safePageNumber(page);
+  const rows = await queryUpcomingMedia(
+    env.DB,
+    "",
+    PAGE_SIZE + 1,
+    safePage * PAGE_SIZE
+  );
+  const hasNext = rows.length > PAGE_SIZE;
+  await sendOrEdit(
+    env,
+    chatId,
+    messageId,
+    formatMedia(rows.slice(0, PAGE_SIZE), "", false, safePage + 1),
+    upcomingMediaKeyboard(safePage, hasNext)
+  );
+}
+
+function upcomingMediaKeyboard(page: number, hasNext: boolean) {
+  return inlineKeyboard([
+    paginationButtons("media:page", page, hasNext),
+    [
+      { text: "🆕 Новинки", data: "menu:new" },
+      { text: "🎬 Фильмы", data: "menu:films" }
+    ],
+    [{ text: "🏠 Главное меню", data: "menu:help" }]
+  ]);
+}
+
+async function showMovieCatalogPage(
+  env: Env,
+  chatId: string,
+  page: number,
+  onlyUpcoming: boolean,
+  messageId?: number
+): Promise<void> {
+  const safePage = safePageNumber(page);
+  const rows = await queryMovieCatalog(env.DB, "", onlyUpcoming, PAGE_SIZE + 1, safePage * PAGE_SIZE);
+  const hasNext = rows.length > PAGE_SIZE;
+  const mode = onlyUpcoming ? "future" : "all";
+  await sendOrEdit(
+    env,
+    chatId,
+    messageId,
+    formatMovieCatalog(rows.slice(0, PAGE_SIZE), "", onlyUpcoming, safePage + 1),
+    inlineKeyboard([
+      paginationButtons(`films:page:${mode}`, safePage, hasNext),
+      [
+        { text: "🎬 Все фильмы", data: "films:page:all:0" },
+        { text: "⏳ Скоро", data: "films:page:future:0" }
+      ],
+      [
+        { text: "🆕 Новинки", data: "menu:new" },
+        { text: "🏠 Главное меню", data: "menu:help" }
+      ]
+    ])
+  );
+}
+
+async function showNewReleasesPage(
+  env: Env,
+  chatId: string,
+  page: number,
+  scope: "series" | "movie" | "both",
+  messageId?: number
+): Promise<void> {
+  const safePage = safePageNumber(page);
+  const since = addDays(new Date(), -7).toISOString().slice(0, 10);
+  const rows = await queryNewByGenre(env.DB, "", since, scope, PAGE_SIZE + 1, safePage * PAGE_SIZE);
+  const hasNext = rows.length > PAGE_SIZE;
+  await sendOrEdit(
+    env,
+    chatId,
+    messageId,
+    formatMedia(rows.slice(0, PAGE_SIZE), "", true, safePage + 1, "Новинки LostFilm за 7 дней"),
+    inlineKeyboard([
+      paginationButtons(`new:page:${scope}`, safePage, hasNext),
+      [
+        { text: "Все", data: "new:page:both:0" },
+        { text: "Сериалы", data: "new:page:series:0" },
+        { text: "Фильмы", data: "new:page:movie:0" }
+      ],
+      [
+        { text: "🎞 Ближайшие", data: "media:page:0" },
+        { text: "🏠 Главное меню", data: "menu:help" }
+      ]
+    ])
+  );
+}
+
+function paginationButtons(prefix: string, page: number, hasNext: boolean): { text: string; data: string }[] {
+  const buttons: { text: string; data: string }[] = [];
+  if (page > 0) buttons.push({ text: "⬅️ Назад", data: `${prefix}:${page - 1}` });
+  buttons.push({ text: `Страница ${page + 1}`, data: `page:info:${page}` });
+  if (hasNext) buttons.push({ text: "Дальше ➡️", data: `${prefix}:${page + 1}` });
+  return buttons;
+}
+
+function safePageNumber(page: number): number {
+  return Math.min(40, Math.max(0, Math.floor(page)));
+}
+
+async function sendOrEdit(
+  env: Env,
+  chatId: string,
+  messageId: number | undefined,
+  text: string,
+  keyboard: ReturnType<typeof inlineKeyboard>
+): Promise<void> {
+  if (messageId) {
+    try {
+      await editMessage(env, chatId, messageId, text, keyboard);
+    } catch (error) {
+      if (!safeError(error).includes("message is not modified")) throw error;
+    }
+  } else {
+    await sendMessage(env, chatId, text, keyboard);
+  }
+}
+
+function mediaSearchResultKeyboard() {
+  return inlineKeyboard([
+    [{ text: "🎞 Все ближайшие релизы", data: "media:page:0" }],
+    [
+      { text: "🆕 Новинки", data: "menu:new" },
+      { text: "🏠 Главное меню", data: "menu:help" }
+    ]
+  ]);
+}
+
+function movieSearchResultKeyboard() {
+  return inlineKeyboard([
+    [
+      { text: "🎬 Все фильмы", data: "films:page:all:0" },
+      { text: "⏳ Скоро", data: "films:page:future:0" }
+    ],
+    [{ text: "🏠 Главное меню", data: "menu:help" }]
+  ]);
+}
+
+function newSearchResultKeyboard(scope: "series" | "movie" | "both") {
+  return inlineKeyboard([
+    [{ text: "🆕 Все новинки", data: `new:page:${scope}:0` }],
+    [
+      { text: "🎞 Ближайшие релизы", data: "media:page:0" },
+      { text: "🏠 Главное меню", data: "menu:help" }
+    ]
+  ]);
+}
+
+function historyResultKeyboard() {
+  return inlineKeyboard([
+    [
+      { text: "🎞 Ближайшие релизы", data: "media:page:0" },
+      { text: "🆕 Новинки", data: "menu:new" }
+    ],
+    [{ text: "🏠 Главное меню", data: "menu:help" }]
+  ]);
+}
+
+async function showSubscriptionsPage(
+  env: Env,
+  telegramId: string,
+  chatId: string,
+  page: number,
+  messageId?: number
+): Promise<void> {
+  const allRows = await listSubscriptions(env.DB, telegramId);
+  const lastPage = Math.max(0, Math.ceil(allRows.length / PAGE_SIZE) - 1);
+  const safePage = Math.min(safePageNumber(page), lastPage);
+  const offset = safePage * PAGE_SIZE;
+  const rows = allRows.slice(offset, offset + PAGE_SIZE);
+  const hasNext = allRows.length > offset + PAGE_SIZE;
+  const text = rows.length
+    ? `Ваши подписки · страница ${safePage + 1}:\n${rows.map((row, index) => {
+      const domain = row.domain === "lessons" ? "эфиры" : "LostFilm";
+      return `${offset + index + 1}. ${domain}: ${row.filter_value}`;
+    }).join("\n")}`
+    : "Активных подписок пока нет. Используйте кнопку «Подписаться».";
+  const keyboardRows: { text: string; data: string }[][] = [];
+  if (allRows.length) keyboardRows.push(paginationButtons("subscriptions:page", safePage, hasNext));
+  keyboardRows.push([
+    { text: "➕ Подписаться", data: "menu:watch" },
+    { text: "🔄 Обновить", data: "menu:subscriptions" }
+  ]);
+  keyboardRows.push([{ text: "🏠 Главное меню", data: "menu:help" }]);
+  await sendOrEdit(env, chatId, messageId, text, inlineKeyboard(keyboardRows));
+}
+
+function statusKeyboard() {
+  return inlineKeyboard([
+    [
+      { text: "🔄 Обновить статус", data: "menu:status" },
+      { text: "🧪 Проверить сейчас", data: "menu:test" }
+    ],
+    [{ text: "🏠 Главное меню", data: "menu:help" }]
+  ]);
+}
+
+function afterRefreshKeyboard() {
+  return inlineKeyboard([
+    [
+      { text: "📺 Эфиры", data: "menu:lessons" },
+      { text: "🆕 Новинки", data: "menu:new" }
+    ],
+    [{ text: "🏠 Главное меню", data: "menu:help" }]
+  ]);
+}
+
 function watchKeyboard() {
   return inlineKeyboard([
     [{ text: "Эфиры по категории", data: "dialog:lesson_category" }],
@@ -585,7 +897,7 @@ function formatLessonTimeline(rows: Record<string, unknown>[], query: string): s
   return `Три ближайших этапа${query ? ` по запросу «${query}»` : ""}:\n\n${blocks.join("\n\n")}`;
 }
 
-function formatFullLessonSchedule(rows: Record<string, unknown>[], query: string): string {
+function formatFullLessonSchedule(rows: Record<string, unknown>[], query: string, page?: number): string {
   if (!rows.length) return query
     ? `В полном расписании ничего не найдено по запросу «${query}».`
     : "В полном расписании нет текущих или будущих эфиров.";
@@ -598,7 +910,8 @@ function formatFullLessonSchedule(rows: Record<string, unknown>[], query: string
   const liveHint = rows.some((row) => row.status === "live")
     ? "\n\nДля прямого эфира откройте ссылку и нажмите на странице «Смотреть прямую трансляцию прямо сейчас»."
     : "";
-  return `Полное расписание эфиров${query ? ` по запросу «${query}»` : ""}:${liveHint}\n\n${lines.join("\n\n")}`;
+  const pageLabel = page ? ` · страница ${page}` : "";
+  return `Полное расписание эфиров${query ? ` по запросу «${query}»` : ""}${pageLabel}:${liveHint}\n\n${lines.join("\n\n")}`;
 }
 
 function formatLessonRow(row: Record<string, unknown>): string {
@@ -610,7 +923,13 @@ function formatLessonRow(row: Record<string, unknown>): string {
   ].filter(Boolean).join("\n");
 }
 
-function formatMedia(rows: Record<string, unknown>[], query: string, historical: boolean): string {
+function formatMedia(
+  rows: Record<string, unknown>[],
+  query: string,
+  historical: boolean,
+  page?: number,
+  heading?: string
+): string {
   if (!rows.length) return query
     ? `LostFilm: ничего не найдено по запросу «${query}».`
     : "LostFilm: подходящих записей пока нет.";
@@ -619,11 +938,17 @@ function formatMedia(rows: Record<string, unknown>[], query: string, historical:
     const date = String(row.released_date || row.scheduled_date || "");
     return `• ${row.title_ru}${season} — ${formatDate(date || null)}\n${row.url}`;
   });
-  const label = historical ? "Результаты LostFilm" : "Ближайшие релизы";
-  return `${label}${query ? ` по запросу «${query}»` : ""}:\n\n${lines.join("\n\n")}`;
+  const label = heading || (historical ? "Результаты LostFilm" : "Ближайшие релизы");
+  const pageLabel = page ? ` · страница ${page}` : "";
+  return `${label}${query ? ` по запросу «${query}»` : ""}${pageLabel}:\n\n${lines.join("\n\n")}`;
 }
 
-function formatMovieCatalog(rows: Record<string, unknown>[], query: string, onlyUpcoming: boolean): string {
+function formatMovieCatalog(
+  rows: Record<string, unknown>[],
+  query: string,
+  onlyUpcoming: boolean,
+  page?: number
+): string {
   if (!rows.length) return query
     ? `В каталоге фильмов ничего не найдено по запросу «${query}».`
     : onlyUpcoming
@@ -645,7 +970,8 @@ function formatMovieCatalog(rows: Record<string, unknown>[], query: string, only
     return `• ${row.title_ru}${row.title_en ? ` / ${row.title_en}` : ""}\n${details}\n${row.url}`;
   });
   const label = onlyUpcoming ? "Будущие фильмы" : "Каталог фильмов";
-  return `${label}${query ? ` по запросу «${query}»` : ""}:\n\n${lines.join("\n\n")}`;
+  const pageLabel = page ? ` · страница ${page}` : "";
+  return `${label}${query ? ` по запросу «${query}»` : ""}${pageLabel}:\n\n${lines.join("\n\n")}`;
 }
 
 function authorize(env: Env, telegramId: string): "owner" | "teacher" | null {

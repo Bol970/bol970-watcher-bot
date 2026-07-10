@@ -565,7 +565,8 @@ export async function queryLiveEvents(
   db: D1Database,
   query = "",
   limit = 20,
-  field: "all" | "teacher" = "all"
+  field: "all" | "teacher" = "all",
+  offset = 0
 ): Promise<Record<string, unknown>[]> {
   const result = await db.prepare(`
     SELECT event_key, title, category, author, scheduled_at, status, url
@@ -579,10 +580,15 @@ export async function queryLiveEvents(
     return teacherMatches ||
       looselyIncludes(String(row.title || ""), query) ||
       looselyIncludes(String(row.category || ""), query);
-  }).slice(0, limit);
+  }).slice(offset, offset + limit);
 }
 
-export async function queryUpcomingMedia(db: D1Database, query = "", limit = 20): Promise<Record<string, unknown>[]> {
+export async function queryUpcomingMedia(
+  db: D1Database,
+  query = "",
+  limit = 20,
+  offset = 0
+): Promise<Record<string, unknown>[]> {
   const result = await db.prepare(`
     SELECT event_key, kind, title_ru, title_en, season, episode,
            scheduled_date, released_date, status, url
@@ -594,14 +600,15 @@ export async function queryUpcomingMedia(db: D1Database, query = "", limit = 20)
   const needle = looseNormalize(query);
   return (result.results || [])
     .filter((row) => !needle || looseNormalize(String(row.title_ru || "")).includes(needle))
-    .slice(0, limit);
+    .slice(offset, offset + limit);
 }
 
 export async function queryMovieCatalog(
   db: D1Database,
   query = "",
   onlyUpcoming = false,
-  limit = 20
+  limit = 20,
+  offset = 0
 ): Promise<Record<string, unknown>[]> {
   const result = await db.prepare(`
     SELECT media_key, title_ru, title_en, url, genres_json, release_year,
@@ -624,7 +631,7 @@ export async function queryMovieCatalog(
     } catch {
       return titleMatches;
     }
-  }).slice(0, limit);
+  }).slice(offset, offset + limit);
 }
 
 export async function queryNewByGenre(
@@ -632,7 +639,8 @@ export async function queryNewByGenre(
   genre: string,
   sinceDate: string,
   scope: "series" | "movie" | "both" = "both",
-  limit = 20
+  limit = 20,
+  offset = 0
 ): Promise<Record<string, unknown>[]> {
   const normalized = normalizeText(genre);
   const result = await db.prepare(`
@@ -652,7 +660,7 @@ export async function queryNewByGenre(
     } catch {
       return false;
     }
-  }).slice(0, limit);
+  }).slice(offset, offset + limit);
 }
 
 export async function queryMediaHistory(db: D1Database, query: string, limit = 30): Promise<Record<string, unknown>[]> {

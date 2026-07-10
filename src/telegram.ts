@@ -48,6 +48,22 @@ export async function sendMessage(
   }
 }
 
+export async function editMessage(
+  env: Env,
+  chatId: string,
+  messageId: number,
+  text: string,
+  replyMarkup?: ReplyMarkup
+): Promise<void> {
+  await telegramApi(env, "editMessageText", {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    disable_web_page_preview: true,
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {})
+  });
+}
+
 export async function answerCallbackQuery(env: Env, callbackQueryId: string, text?: string): Promise<void> {
   await telegramApi(env, "answerCallbackQuery", {
     callback_query_id: callbackQueryId,
